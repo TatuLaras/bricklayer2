@@ -1,7 +1,9 @@
 NAME = bricklayer
 CC = gcc
 BUILD_DIR = build
+SHADER_BUILD_DIR = build/shaders
 SRC_DIR = src
+SHADER_SRC_DIR = $(SRC_DIR)/shaders
 PKG = $(shell pkg-config --libs vulkan glfw3)
 INCLUDE = 
 ARGS =
@@ -18,8 +20,10 @@ endif
 
 CFLAGS = -Wall -Wextra -Wshadow -pedantic -Wstrict-prototypes -march=native $(ASAN) $(DEBUG_FLAGS)
 
+SHADER_OBJS = $(patsubst $(SHADER_SRC_DIR)/%.slang, $(SHADER_BUILD_DIR)/%.spv, $(wildcard $(SHADER_SRC_DIR)/*.slang))
+
 .PHONY: all
-all: $(BUILD_DIR) $(BUILD_DIR)/$(NAME)
+all: $(BUILD_DIR) $(SHADER_BUILD_DIR) $(SHADER_OBJS) $(BUILD_DIR)/$(NAME)
 
 .PHONY: run
 run: all
@@ -35,10 +39,15 @@ $(BUILD_DIR)/$(NAME): $(OBJS)
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) -c $^ -o $@ $(INCLUDE) $(CFLAGS) $(CC_ARGS)
 
+$(SHADER_BUILD_DIR)/%.spv: $(SHADER_SRC_DIR)/%.slang
+	slangc $^ -target spirv -profile spirv_1_4 -emit-spirv-directly -fvk-use-entrypoint-name -entry vertMain -entry fragMain -o $@
+
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
+$(SHADER_BUILD_DIR):
+	mkdir -p $(SHADER_BUILD_DIR)
 
 .PHONY: clean
 clean:
-	rm $(BUILD_DIR)/*
+	rm -rf $(BUILD_DIR)
 

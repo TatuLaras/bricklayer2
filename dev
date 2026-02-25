@@ -1,2 +1,3 @@
 #!/bin/sh
-make run SANITIZE=yes DEBUG=yes $*
+make run DEBUG=yes $*
+# make run SANITIZE=yes DEBUG=yes $*
