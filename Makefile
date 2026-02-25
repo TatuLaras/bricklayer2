@@ -3,7 +3,7 @@ CC = gcc
 BUILD_DIR = build
 SRC_DIR = src
 PKG = $(shell pkg-config --libs vulkan glfw3)
-INCLUDE = -Idata
+INCLUDE = 
 ARGS =
 DEBUG_FLAGS = -DNDEBUG
 
