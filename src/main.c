@@ -25,6 +25,7 @@
 #define VK_ERR(result) VK_ERR_MSG(result, STR(result))
 
 #define SWAPCHAIN_MAX_IMAGES 16
+#define MAX_FRAMES_IN_FLIGHT 2
 
 static GLFWwindow *window = 0;
 static VkInstance instance = 0;
@@ -37,11 +38,12 @@ static VkExtent2D swap_extent = {0};
 static VkSwapchainKHR swapchain = 0;
 static VkSurfaceFormatKHR surface_format = {0};
 static VkPipeline pipeline = 0;
-static VkCommandBuffer command_buffer = 0;
 
-static VkSemaphore semaphore_present_done = 0;
-static VkSemaphore semaphore_rendering_done = 0;
-static VkFence draw_fence = 0;
+static VkCommandBuffer command_buffers[MAX_FRAMES_IN_FLIGHT] = {0};
+static VkSemaphore present_done_semaphores[MAX_FRAMES_IN_FLIGHT] = {0};
+static VkSemaphore rendering_done_semaphores[MAX_FRAMES_IN_FLIGHT] = {0};
+static VkFence draw_fences[MAX_FRAMES_IN_FLIGHT] = {0};
+static uint32_t frame_index = 0;
 
 static struct {
     uint32_t count;
@@ -279,6 +281,7 @@ static inline void create_logical_device(void) {
 }
 
 static inline void create_swap_chain(void) {
+
     VkSurfaceCapabilitiesKHR surface_capabilities;
     VK_ERR(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
         physical_device, surface, &surface_capabilities));
@@ -368,6 +371,7 @@ static inline void create_swap_chain(void) {
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
         .presentMode = present_mode,
         .clipped = VK_TRUE,
+        .oldSwapchain = swapchain,
     };
     VK_ERR(vkCreateSwapchainKHR(
         logical_device, &swapchain_create_info, NULL, &swapchain));
@@ -500,7 +504,7 @@ static inline void create_graphics_pipeline(void) {
         logical_device, NULL, 1, &graphics, NULL, &pipeline));
 }
 
-static inline void create_command_buffer(void) {
+static inline void create_command_buffers(void) {
 
     // Create command pool
     VkCommandPool command_pool;
@@ -516,10 +520,10 @@ static inline void create_command_buffer(void) {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = command_pool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
+        .commandBufferCount = MAX_FRAMES_IN_FLIGHT,
     };
     VK_ERR(
-        vkAllocateCommandBuffers(logical_device, &alloc_info, &command_buffer));
+        vkAllocateCommandBuffers(logical_device, &alloc_info, command_buffers));
 }
 
 static inline void create_sync_objects(void) {
@@ -527,18 +531,23 @@ static inline void create_sync_objects(void) {
     VkSemaphoreCreateInfo semaphore_create_info = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 
-    VK_ERR(vkCreateSemaphore(
-        logical_device, &semaphore_create_info, NULL, &semaphore_present_done));
-    VK_ERR(vkCreateSemaphore(logical_device,
-                             &semaphore_create_info,
-                             NULL,
-                             &semaphore_rendering_done));
-
     VkFenceCreateInfo fence_create_info = {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
 
-    VK_ERR(
-        vkCreateFence(logical_device, &fence_create_info, NULL, &draw_fence));
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+
+        VK_ERR(vkCreateSemaphore(logical_device,
+                                 &semaphore_create_info,
+                                 NULL,
+                                 present_done_semaphores + i));
+        VK_ERR(vkCreateSemaphore(logical_device,
+                                 &semaphore_create_info,
+                                 NULL,
+                                 rendering_done_semaphores + i));
+
+        VK_ERR(vkCreateFence(
+            logical_device, &fence_create_info, NULL, draw_fences + i));
+    }
 }
 
 static inline void
@@ -573,7 +582,7 @@ transition_image_layout(uint32_t image_index,
         .pImageMemoryBarriers = &barrier,
     };
 
-    vkCmdPipelineBarrier2(command_buffer, &dependency_info);
+    vkCmdPipelineBarrier2(command_buffers[frame_index], &dependency_info);
 }
 
 static inline void record_command_buffer(uint32_t image_index) {
@@ -581,7 +590,7 @@ static inline void record_command_buffer(uint32_t image_index) {
     // Begin command buffer
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    VK_ERR(vkBeginCommandBuffer(command_buffer, &begin_info));
+    VK_ERR(vkBeginCommandBuffer(command_buffers[frame_index], &begin_info));
 
     transition_image_layout(image_index,
                             VK_IMAGE_LAYOUT_UNDEFINED,
@@ -609,18 +618,19 @@ static inline void record_command_buffer(uint32_t image_index) {
         .pColorAttachments = &attachment_info,
     };
 
-    vkCmdBeginRendering(command_buffer, &rendering_info);
-    vkCmdBindPipeline(
-        command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBeginRendering(command_buffers[frame_index], &rendering_info);
+    vkCmdBindPipeline(command_buffers[frame_index],
+                      VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      pipeline);
 
     VkViewport viewport = {0, 0, swap_extent.width, swap_extent.height, 0, 1};
-    vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+    vkCmdSetViewport(command_buffers[frame_index], 0, 1, &viewport);
 
     VkRect2D scissor = {.extent = swap_extent};
-    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+    vkCmdSetScissor(command_buffers[frame_index], 0, 1, &scissor);
 
-    vkCmdDraw(command_buffer, 3, 1, 0, 0);
-    vkCmdEndRendering(command_buffer);
+    vkCmdDraw(command_buffers[frame_index], 3, 1, 0, 0);
+    vkCmdEndRendering(command_buffers[frame_index]);
     transition_image_layout(image_index,
                             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                             VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -629,7 +639,17 @@ static inline void record_command_buffer(uint32_t image_index) {
                             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                             VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
 
-    vkEndCommandBuffer(command_buffer);
+    vkEndCommandBuffer(command_buffers[frame_index]);
+}
+
+static inline void recreate_swapchain(void) {
+
+    VK_ERR(vkDeviceWaitIdle(logical_device));
+    memset(swapchain_images.images, 0, sizeof swapchain_images.images);
+    memset(
+        swapchain_images.image_views, 0, sizeof swapchain_images.image_views);
+    swapchain_images.count = SWAPCHAIN_MAX_IMAGES;
+    create_swap_chain();
 }
 
 static inline void draw_frame(void) {
@@ -637,54 +657,72 @@ static inline void draw_frame(void) {
     VK_ERR(vkQueueWaitIdle(queue));
 
     uint32_t image_index;
-    VK_ERR(vkAcquireNextImageKHR(logical_device,
-                                 swapchain,
-                                 UINT64_MAX,
-                                 semaphore_present_done,
-                                 NULL,
-                                 &image_index));
+    VkResult result =
+        vkAcquireNextImageKHR(logical_device,
+                              swapchain,
+                              UINT64_MAX,
+                              present_done_semaphores[frame_index],
+                              NULL,
+                              &image_index);
+
+    switch (result) {
+    case VK_SUCCESS:
+        break;
+
+    case VK_SUBOPTIMAL_KHR:
+    case VK_ERROR_OUT_OF_DATE_KHR:
+        recreate_swapchain();
+        return;
+
+    default:
+        VK_ERR_MSG(result, "vkAcquireNextImageKHR()");
+        break;
+    }
 
     record_command_buffer(image_index);
 
-    VK_ERR(vkResetFences(logical_device, 1, &draw_fence));
+    VK_ERR(vkResetFences(logical_device, 1, &draw_fences[frame_index]));
 
     VkPipelineStageFlags wait_destination_stage_mask =
         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submit_info = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &semaphore_present_done,
+        .pWaitSemaphores = present_done_semaphores + frame_index,
         .pWaitDstStageMask = &wait_destination_stage_mask,
         .commandBufferCount = 1,
-        .pCommandBuffers = &command_buffer,
+        .pCommandBuffers = command_buffers + frame_index,
         .signalSemaphoreCount = 1,
-        .pSignalSemaphores = &semaphore_rendering_done,
+        .pSignalSemaphores = rendering_done_semaphores + frame_index,
     };
-    VK_ERR(vkQueueSubmit(queue, 1, &submit_info, draw_fence));
-    VK_ERR(
-        vkWaitForFences(logical_device, 1, &draw_fence, VK_TRUE, UINT64_MAX));
+    VK_ERR(vkQueueSubmit(queue, 1, &submit_info, draw_fences[frame_index]));
+    VK_ERR(vkWaitForFences(
+        logical_device, 1, draw_fences + frame_index, VK_TRUE, UINT64_MAX));
 
     VkPresentInfoKHR present_info = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &semaphore_rendering_done,
+        .pWaitSemaphores = rendering_done_semaphores + frame_index,
         .swapchainCount = 1,
         .pSwapchains = &swapchain,
         .pImageIndices = &image_index,
     };
 
-    VkResult result = vkQueuePresentKHR(queue, &present_info);
-    if (result == VK_SUCCESS)
-        return;
+    frame_index = (frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
+
+    result = vkQueuePresentKHR(queue, &present_info);
 
     switch (result) {
+    case VK_SUCCESS:
+        break;
 
-    case VK_ERROR_OUT_OF_DATE_KHR: {
-        printf("khr out of date!!!\n");
-    } break;
+    case VK_SUBOPTIMAL_KHR:
+    case VK_ERROR_OUT_OF_DATE_KHR:
+        recreate_swapchain();
+        return;
 
     default:
-        VK_ERR_MSG(result, "unexpected error during vkQueuePresentKHR()");
+        VK_ERR_MSG(result, "vkQueuePresentKHR()");
     }
 }
 
@@ -700,7 +738,7 @@ int main(int argc, char **argv) {
     create_logical_device();
     create_swap_chain();
     create_graphics_pipeline();
-    create_command_buffer();
+    create_command_buffers();
     create_sync_objects();
 
     printf("Done\n");
