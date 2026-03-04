@@ -6,7 +6,7 @@ CGLM = $(EXTERNAL_DIR)/cglm/include
 SHADER_BUILD_DIR = build/shaders
 SRC_DIR = src
 SHADER_SRC_DIR = $(SRC_DIR)/shaders
-PKG = $(shell pkg-config --libs vulkan glfw3 raylib) -lm
+PKG = $(shell pkg-config --libs vulkan glfw3) -lm
 INCLUDE = -I$(EXTERNAL_DIR) -I$(CGLM)
 ARGS =
 DEBUG_FLAGS = -DNDEBUG
@@ -32,7 +32,7 @@ run: all
 	@echo -e "\n\n\n\n---"
 	@$(BUILD_DIR)/$(NAME) $(ARGS)
 
-OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(wildcard $(SRC_DIR)/*.c) $(wildcard $(EXTERNAL_DIR)/*.c))
+OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(wildcard $(SRC_DIR)/*.c))
 
 # output executable
 $(BUILD_DIR)/$(NAME): $(OBJS)

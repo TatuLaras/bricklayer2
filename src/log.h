@@ -15,8 +15,12 @@
 #else
 #ifdef DEBUG
 #define ERROR(message, ...)                                                    \
-    fprintf(stderr, LOG_PREFIX "[%s() at %s:%u] ERROR: " message "\n",         \
-            __func__, __FILE__, __LINE__, ##__VA_ARGS__)
+    fprintf(stderr,                                                            \
+            LOG_PREFIX "[%s() at %s:%u] ERROR: " message "\n",                 \
+            __func__,                                                          \
+            __FILE__,                                                          \
+            __LINE__,                                                          \
+            ##__VA_ARGS__)
 #else
 #define ERROR(message, ...)                                                    \
     fprintf(stderr, LOG_PREFIX "ERROR: " message "\n", ##__VA_ARGS__)
@@ -30,20 +34,17 @@
         exit(EXIT_FAILURE);                                                    \
     }
 
-// Return -1 on `cond` and print an error `message`.
-#define ERR_RETURN(cond, message)                                              \
-    if (cond) {                                                                \
-        ERROR(message ": %s", strerror(errno));                                \
-        return -1;                                                             \
-    }
-
 #ifdef LOG_DISABLE_WARNING
 #define WARNING(...)
 #else
 #ifdef DEBUG
 #define WARNING(message, ...)                                                  \
-    fprintf(stderr, LOG_PREFIX "[%s() at %s:%u] WARNING: " message "\n",       \
-            __func__, __FILE__, __LINE__, ##__VA_ARGS__)
+    fprintf(stderr,                                                            \
+            LOG_PREFIX "[%s() at %s:%u] WARNING: " message "\n",               \
+            __func__,                                                          \
+            __FILE__,                                                          \
+            __LINE__,                                                          \
+            ##__VA_ARGS__)
 #else
 #define WARNING(message, ...)                                                  \
     fprintf(stderr, LOG_PREFIX "WARNING: " message "\n", ##__VA_ARGS__)
@@ -55,8 +56,11 @@
 #else
 #ifdef DEBUG
 #define INFO(message, ...)                                                     \
-    printf(LOG_PREFIX "[%s() at %s:%u] INFO: " message "\n", __func__,         \
-           __FILE__, __LINE__, ##__VA_ARGS__)
+    printf(LOG_PREFIX "[%s() at %s:%u] INFO: " message "\n",                   \
+           __func__,                                                           \
+           __FILE__,                                                           \
+           __LINE__,                                                           \
+           ##__VA_ARGS__)
 
 #else
 #define INFO(message, ...)                                                     \
