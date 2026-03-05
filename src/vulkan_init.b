@@ -1,172 +1,41 @@
-#include "graphics_api.h"
-
-#include "log.h"
+#include "vulkan_init.h"
 #include "math_macros.h"
-// #define VEC_INLINE_FUNCTIONS
-#include "vec.h"
 
 #include <vulkan/vk_enum_string_helper.h>
 #include <vulkan/vulkan.h>
-#include <vulkan/vulkan_core.h>
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
-#define SYS_ERR(result)                                                        \
-    if ((result) < 0)                                                          \
-        return GAPI_SYSTEM_ERROR;
-
-#define STR(x) #x
-
-#ifdef DEBUG
-#define VK_ERR(result)                                                         \
-    {                                                                          \
-        VkResult __res = result;                                               \
-        if (__res != VK_SUCCESS) {                                             \
-            ERROR(STR(result) ": %s", string_VkResult(__res));                 \
-            vulkan_error = __res;                                              \
-            return GAPI_VULKAN_ERROR;                                          \
-        }                                                                      \
-    }
-#else
-#define VK_ERR(result)                                                         \
-    {                                                                          \
-        VkResult __res = result;                                               \
-        if (__res != VK_SUCCESS) {                                             \
-            vulkan_error = __res;                                              \
-            return GAPI_VULKAN_ERROR;                                          \
-        }                                                                      \
-    }
-#endif
-
-#define PROPAGATE(result)                                                      \
-    {                                                                          \
-        GapiResult __res = result;                                             \
-        if (__res != GAPI_SUCCESS) {                                           \
-            return __res;                                                      \
-        }                                                                      \
-    }
-
-#define MAX_FRAMES_IN_FLIGHT 2
-#define SWAPCHAIN_MAX_IMAGES 16
-#define DEG_TO_RAD 0.01745329252
-
-typedef struct {
-    mat4 model;
-    mat4 view;
-    mat4 projection;
-} UBOData;
-
-typedef struct {
-    VkBuffer vertex_buffer;
-    VkBuffer index_buffer;
-    VkDeviceMemory vertex_memory;
-    VkDeviceMemory index_memory;
-    uint32_t index_count;
-} GapiMesh;
-
-typedef struct {
-    GapiMeshHandle mesh_handle;
-    GapiTextureHandle texture_handle;
-    vec4 model_matrix[4];
-    VkBuffer uniform_buffers[MAX_FRAMES_IN_FLIGHT];
-    VkDeviceMemory uniform_buffer_memories[MAX_FRAMES_IN_FLIGHT];
-    void *uniform_buffer_mappings[MAX_FRAMES_IN_FLIGHT];
-    VkDescriptorSet descriptor_sets[MAX_FRAMES_IN_FLIGHT];
-} GapiObject;
-
-typedef struct {
-    VkImage image;
-    VkDeviceMemory image_memory;
-    VkImageView image_view;
-    VkSampler sampler;
-} GapiTexture;
-
-VEC(GapiObject, GapiObjectBuf)
-VEC(GapiMesh, GapiMeshBuf)
-VEC(GapiTexture, GapiTextureBuf)
-
-static VkResult vulkan_error;
-
-static uint32_t frame_index = 0;
-static uint32_t image_index;
-
-static GLFWwindow *window = NULL;
-static int has_window_resized = 0;
-
-static GapiCamera scene_camera = {0};
-
-static VkInstance instance = NULL;
-static VkSurfaceKHR surface = NULL;
-static VkSurfaceFormatKHR surface_format = {0};
-static VkPhysicalDevice physical_device = NULL;
-static VkDevice logical_device = NULL;
-static uint32_t queue_index = 0;
-static VkQueue queue = 0;
-static VkExtent2D swap_extent = {0};
-static VkSwapchainKHR swapchain = 0;
-static struct {
-    uint32_t count;
-    VkImage images[SWAPCHAIN_MAX_IMAGES];
-    VkImageView image_views[SWAPCHAIN_MAX_IMAGES];
-} swapchain_images = {.count = SWAPCHAIN_MAX_IMAGES};
-
-static VkSemaphore present_done_semaphores[MAX_FRAMES_IN_FLIGHT] = {0};
-static VkSemaphore rendering_done_semaphores[MAX_FRAMES_IN_FLIGHT] = {0};
-static VkFence draw_fences[MAX_FRAMES_IN_FLIGHT] = {0};
-
 static VkCommandPool command_pool = NULL;
-static VkCommandBuffer drawing_command_buffers[MAX_FRAMES_IN_FLIGHT] = {0};
 
-static VkImage depth_image = NULL;
-static VkDeviceMemory depth_image_memory;
-static VkImageView depth_image_view;
-static VkFormat depth_format = 0;
+static inline GapiResult find_graphics_present_queue(
+    VkPhysicalDevice device, VkSurfaceKHR surface, uint32_t *out_queue_index) {
 
-static VkDescriptorSetLayout descriptor_set_layout = NULL;
+    uint32_t queue_count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_count, NULL);
 
-static VkPipeline *pipelines = NULL;
-static VkPipelineLayout pipeline_layout = NULL;
+    VkQueueFamilyProperties queues[queue_count];
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_count, queues);
 
-static GapiObjectBuf objects = {0};
-static GapiMeshBuf meshes = {0};
-static GapiTextureBuf textures = {0};
+    for (uint32_t i = 0; i < queue_count; i++) {
+        if ((queues[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0)
+            continue;
 
-static void
-window_resize_callback(GLFWwindow *_window, int _width, int _height) {
-    (void)_window;
-    (void)_width;
-    (void)_height;
+        VkBool32 is_present_supported;
+        VK_ERR(vkGetPhysicalDeviceSurfaceSupportKHR(
+            device, i, surface, &is_present_supported));
 
-    has_window_resized = 1;
-}
+        if (is_present_supported == VK_FALSE)
+            continue;
 
-static inline GapiResult init_window(uint32_t width,
-                                     uint32_t height,
-                                     const char *title,
-                                     GapiWindowFlags flags) {
-
-    glfwInit();
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-
-    if (flags & GAPI_WINDOW_RESIZEABLE)
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-    else
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-
-    window = glfwCreateWindow(width, height, title, NULL, NULL);
-
-    if (!window) {
-        const char *msg = 0;
-        glfwGetError(&msg);
-        ERROR("%s", msg);
-        return GAPI_GLFW_ERROR;
+        *out_queue_index = i;
+        return GAPI_SUCCESS;
     }
-    glfwSetFramebufferSizeCallback(window, window_resize_callback);
 
-    return GAPI_SUCCESS;
+    return GAPI_ERROR_GENERIC;
 }
 
-static inline GapiResult create_instance(void) {
+GapiResult create_instance(VkInstance *out_instance) {
 #ifdef DEBUG
     const char *validation_layer_name = "VK_LAYER_KHRONOS_validation";
 
@@ -262,40 +131,17 @@ static inline GapiResult create_instance(void) {
         .enabledExtensionCount = required_extensions_count,
         .ppEnabledExtensionNames = required_extensions,
     };
-    VK_ERR(vkCreateInstance(&create_info, NULL, &instance));
+    VK_ERR(vkCreateInstance(&create_info, NULL, out_instance));
     free(required_extensions);
 
     return GAPI_SUCCESS;
 }
 
-static inline GapiResult find_queue(VkPhysicalDevice device,
-                                    uint32_t *out_queue_index) {
-
-    uint32_t queue_count = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_count, NULL);
-
-    VkQueueFamilyProperties queues[queue_count];
-    vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_count, queues);
-
-    for (uint32_t i = 0; i < queue_count; i++) {
-        if ((queues[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0)
-            continue;
-
-        VkBool32 is_present_supported;
-        VK_ERR(vkGetPhysicalDeviceSurfaceSupportKHR(
-            device, i, surface, &is_present_supported));
-
-        if (is_present_supported == VK_FALSE)
-            continue;
-
-        *out_queue_index = i;
-        return GAPI_SUCCESS;
-    }
-
-    return GAPI_ERROR_GENERIC;
-}
-
-static inline GapiResult pick_physical_device(void) {
+static inline GapiResult
+pick_physical_device(VkInstance instance,
+                     VkSurfaceKHR surface,
+                     VkPhysicalDevice *out_physical_device,
+                     uint32_t *out_queue_index) {
 
     uint32_t device_count = 0;
     VK_ERR(vkEnumeratePhysicalDevices(instance, &device_count, NULL));
@@ -310,10 +156,11 @@ static inline GapiResult pick_physical_device(void) {
         VkPhysicalDeviceProperties device_properties;
         vkGetPhysicalDeviceProperties(devices[i], &device_properties);
 
-        if (find_queue(devices[i], &queue_index) != GAPI_SUCCESS)
+        if (find_graphics_present_queue(devices[i], surface, out_queue_index) !=
+            GAPI_SUCCESS)
             continue;
 
-        physical_device = devices[i];
+        *out_physical_device = devices[i];
         return GAPI_SUCCESS;
     }
 
@@ -321,7 +168,10 @@ static inline GapiResult pick_physical_device(void) {
     return GAPI_NO_DEVICE_FOUND;
 }
 
-static inline GapiResult create_logical_device(void) {
+GapiResult create_logical_device(uint32_t queue_index,
+                                 VkPhysicalDevice physical_device,
+                                 VkDevice *out_device,
+                                 VkQueue *out_queue) {
     VkPhysicalDeviceExtendedDynamicStateFeaturesEXT f1 = {
         .sType =
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT,
@@ -365,31 +215,39 @@ static inline GapiResult create_logical_device(void) {
         .ppEnabledExtensionNames = required_extensions,
     };
 
-    VK_ERR(vkCreateDevice(
-        physical_device, &device_create_info, NULL, &logical_device));
-    vkGetDeviceQueue(logical_device, queue_index, 0, &queue);
+    VK_ERR(
+        vkCreateDevice(physical_device, &device_create_info, NULL, out_device));
+    vkGetDeviceQueue(*out_device, queue_index, 0, out_queue);
 
     return GAPI_SUCCESS;
 }
 
-static inline GapiResult create_swapchain(void) {
+GapiResult create_swapchain(VkPhysicalDevice physical_device,
+                            VkDevice device,
+                            GLFWwindow *window,
+                            VkSurfaceKHR surface,
+                            VkExtent2D *out_swap_extent,
+                            VkSurfaceFormatKHR *out_surface_format,
+                            VkSwapchainKHR *out_swapchain) {
 
     VkSurfaceCapabilitiesKHR surface_capabilities;
     VK_ERR(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
         physical_device, surface, &surface_capabilities));
 
     // Choose swap extent
-    swap_extent = surface_capabilities.currentExtent;
-    if (swap_extent.width == 0xffffffff) {
+    *out_swap_extent = surface_capabilities.currentExtent;
+    if (out_swap_extent->width == 0xffffffff) {
         int width, height;
         glfwGetFramebufferSize(window, &width, &height);
 
-        swap_extent.width = CLAMP((uint32_t)width,
-                                  surface_capabilities.minImageExtent.width,
-                                  surface_capabilities.maxImageExtent.width);
-        swap_extent.height = CLAMP((uint32_t)height,
-                                   surface_capabilities.minImageExtent.height,
-                                   surface_capabilities.maxImageExtent.height);
+        out_swap_extent->width =
+            CLAMP((uint32_t)width,
+                  surface_capabilities.minImageExtent.width,
+                  surface_capabilities.maxImageExtent.width);
+        out_swap_extent->height =
+            CLAMP((uint32_t)height,
+                  surface_capabilities.minImageExtent.height,
+                  surface_capabilities.maxImageExtent.height);
     }
 
     // Choose image format
@@ -403,13 +261,13 @@ static inline GapiResult create_swapchain(void) {
 
     ERR(format_count == 0, "no formats");
 
-    surface_format = *formats;
+    *out_surface_format = *formats;
     for (uint32_t i = 0; i < format_count; i++) {
         if (formats[i].format != VK_FORMAT_B8G8R8A8_SRGB)
             continue;
         if (formats[i].colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
             continue;
-        surface_format = formats[i];
+        *out_surface_format = formats[i];
         break;
     }
 
@@ -447,9 +305,9 @@ static inline GapiResult create_swapchain(void) {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = surface,
         .minImageCount = min_image_count,
-        .imageFormat = surface_format.format,
-        .imageColorSpace = surface_format.colorSpace,
-        .imageExtent = swap_extent,
+        .imageFormat = out_surface_format->format,
+        .imageColorSpace = out_surface_format->colorSpace,
+        .imageExtent = *out_swap_extent,
         .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
@@ -457,15 +315,22 @@ static inline GapiResult create_swapchain(void) {
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
         .presentMode = present_mode,
         .clipped = VK_TRUE,
-        .oldSwapchain = swapchain,
     };
     VK_ERR(vkCreateSwapchainKHR(
-        logical_device, &swapchain_create_info, NULL, &swapchain));
+        device, &swapchain_create_info, NULL, out_swapchain));
 
-    VK_ERR(vkGetSwapchainImagesKHR(logical_device,
-                                   swapchain,
-                                   &swapchain_images.count,
-                                   swapchain_images.images));
+    return GAPI_SUCCESS;
+}
+
+GapiResult
+create_swapchain_image_views(VkDevice device,
+                             VkSwapchainKHR swapchain,
+                             VkSurfaceFormatKHR surface_format,
+                             uint32_t *swapchain_image_count,
+                             VkImage *out_swapchain_images,
+                             VkImageView *out_swapchain_image_views) {
+    VK_ERR(vkGetSwapchainImagesKHR(
+        device, swapchain, swapchain_image_count, out_swapchain_images));
 
     // Create image views
     VkImageViewCreateInfo image_view_create_info = {
@@ -474,18 +339,22 @@ static inline GapiResult create_swapchain(void) {
         .format = surface_format.format,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
-    for (uint32_t i = 0; i < swapchain_images.count; i++) {
-        image_view_create_info.image = swapchain_images.images[i];
-        VK_ERR(vkCreateImageView(logical_device,
+    for (uint32_t i = 0; i < *swapchain_image_count; i++) {
+        image_view_create_info.image = out_swapchain_images[i];
+        VK_ERR(vkCreateImageView(device,
                                  &image_view_create_info,
                                  NULL,
-                                 swapchain_images.image_views + i));
+                                 out_swapchain_image_views + i));
     }
 
     return GAPI_SUCCESS;
 }
 
-static inline GapiResult create_drawing_command_buffers(void) {
+static inline GapiResult
+create_command_buffers(uint32_t queue_index,
+                       VkDevice device,
+                       uint32_t command_buffer_count,
+                       VkCommandBuffer *out_command_buffers) {
 
     // Create command pool
     VkCommandPoolCreateInfo command_pool_create_info = {
@@ -494,21 +363,49 @@ static inline GapiResult create_drawing_command_buffers(void) {
         .queueFamilyIndex = queue_index,
     };
     VK_ERR(vkCreateCommandPool(
-        logical_device, &command_pool_create_info, NULL, &command_pool));
+        device, &command_pool_create_info, NULL, &command_pool));
 
     VkCommandBufferAllocateInfo alloc_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = command_pool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = MAX_FRAMES_IN_FLIGHT,
+        .commandBufferCount = command_buffer_count,
     };
-    VK_ERR(vkAllocateCommandBuffers(
-        logical_device, &alloc_info, drawing_command_buffers));
+    VK_ERR(vkAllocateCommandBuffers(device, &alloc_info, out_command_buffers));
 
     return GAPI_SUCCESS;
 }
 
-static inline GapiResult find_memory_type(VkMemoryRequirements requirements,
+GapiResult init_window(uint32_t width,
+                       uint32_t height,
+                       const char *title,
+                       GapiWindowFlags flags,
+                       GLFWframebuffersizefun window_resize_callback,
+                       GLFWwindow *out_window) {
+
+    glfwInit();
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+    if (flags & GAPI_WINDOW_RESIZEABLE)
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    else
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+
+    out_window = glfwCreateWindow(width, height, title, NULL, NULL);
+
+    if (out_window == NULL) {
+        const char *msg = 0;
+        glfwGetError(&msg);
+        ERROR("%s", msg);
+        return GAPI_GLFW_ERROR;
+    }
+    glfwSetFramebufferSizeCallback(out_window, window_resize_callback);
+
+    return GAPI_SUCCESS;
+}
+
+static inline GapiResult find_memory_type(VkPhysicalDevice physical_device,
+                                          VkMemoryRequirements requirements,
                                           VkMemoryPropertyFlags flags,
                                           uint32_t *out_memory_type) {
 
@@ -534,7 +431,9 @@ static inline GapiResult find_memory_type(VkMemoryRequirements requirements,
     return GAPI_SUCCESS;
 }
 
-static inline GapiResult create_image(uint32_t width,
+static inline GapiResult create_image(VkPhysicalDevice physical_device,
+                                      VkDevice device,
+                                      uint32_t width,
                                       uint32_t height,
                                       VkFormat format,
                                       VkImageTiling tiling,
@@ -556,30 +455,33 @@ static inline GapiResult create_image(uint32_t width,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
     };
-    VK_ERR(vkCreateImage(logical_device, &image_create_info, NULL, out_image));
+    VK_ERR(vkCreateImage(device, &image_create_info, NULL, out_image));
 
     // Create memory
     VkMemoryRequirements memory_requirements;
-    vkGetImageMemoryRequirements(
-        logical_device, *out_image, &memory_requirements);
+    vkGetImageMemoryRequirements(device, *out_image, &memory_requirements);
 
     VkMemoryAllocateInfo alloc_info = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = memory_requirements.size,
     };
-    PROPAGATE(find_memory_type(
-        memory_requirements, properties, &alloc_info.memoryTypeIndex));
-    VK_ERR(vkAllocateMemory(logical_device, &alloc_info, NULL, out_memory));
-    VK_ERR(vkBindImageMemory(logical_device, *out_image, *out_memory, 0));
+    PROPAGATE(find_memory_type(physical_device,
+                               memory_requirements,
+                               properties,
+                               &alloc_info.memoryTypeIndex));
+    VK_ERR(vkAllocateMemory(device, &alloc_info, NULL, out_memory));
+    VK_ERR(vkBindImageMemory(device, *out_image, *out_memory, 0));
 
     return GAPI_SUCCESS;
 }
 
-static inline GapiResult find_supported_depth_format(uint32_t candidates_count,
-                                                     VkFormat *candidates,
-                                                     VkImageTiling tiling,
-                                                     VkFormatFeatureFlags flags,
-                                                     VkFormat *out_format) {
+static inline GapiResult
+find_supported_depth_format(VkPhysicalDevice physical_device,
+                            uint32_t candidates_count,
+                            VkFormat *candidates,
+                            VkImageTiling tiling,
+                            VkFormatFeatureFlags flags,
+                            VkFormat *out_format) {
 
     for (uint32_t i = 0; i < candidates_count; i++) {
 
@@ -602,7 +504,10 @@ static inline GapiResult find_supported_depth_format(uint32_t candidates_count,
     return GAPI_VULKAN_FEATURE_UNSUPPORTED;
 }
 
-static inline GapiResult create_depth_resources(void) {
+static inline GapiResult
+create_depth_resources(VkPhysicalDevice physical_device,
+                       VkExtent2D swap_extent,
+                       VkFormat *out_depth_format) {
 
     VkFormat format_candidates[] = {
         VK_FORMAT_D32_SFLOAT,
@@ -610,15 +515,16 @@ static inline GapiResult create_depth_resources(void) {
         VK_FORMAT_D24_UNORM_S8_UINT,
     };
     PROPAGATE(find_supported_depth_format(
+        physical_device,
         COUNT(format_candidates),
         format_candidates,
         VK_IMAGE_TILING_OPTIMAL,
         VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT,
-        &depth_format));
+        out_depth_format));
 
     PROPAGATE(create_image(swap_extent.width,
                            swap_extent.height,
-                           depth_format,
+                           *out_depth_format,
                            VK_IMAGE_TILING_OPTIMAL,
                            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -1164,425 +1070,4 @@ static inline GapiResult create_sync_objects(void) {
     }
 
     return GAPI_SUCCESS;
-}
-
-GapiResult gapi_init(GapiInitInfo *info) {
-
-    if (GapiObjectBuf_init(&objects) < 0)
-        return GAPI_SYSTEM_ERROR;
-    if (GapiMeshBuf_init(&meshes) < 0)
-        return GAPI_SYSTEM_ERROR;
-    if (GapiTextureBuf_init(&textures) < 0)
-        return GAPI_SYSTEM_ERROR;
-
-    PROPAGATE(init_window(info->window.width,
-                          info->window.height,
-                          info->window.title,
-                          info->window.flags));
-
-    PROPAGATE(create_instance());
-    VK_ERR(glfwCreateWindowSurface(instance, window, NULL, &surface));
-    PROPAGATE(pick_physical_device());
-    PROPAGATE(create_logical_device());
-    PROPAGATE(create_swapchain());
-    PROPAGATE(create_drawing_command_buffers());
-    PROPAGATE(create_depth_resources());
-    PROPAGATE(create_descriptor_set_layout());
-
-    ERR((pipelines = calloc(info->shader_count, sizeof(VkPipeline))) == NULL,
-        "calloc()");
-
-    for (uint32_t i = 0; i < info->shader_count; i++) {
-        PROPAGATE(create_graphics_pipeline(info->shaders[i], pipelines + i));
-    }
-
-    PROPAGATE(create_sync_objects());
-
-    return GAPI_SUCCESS;
-}
-
-GapiResult gapi_mesh_upload(MeshData *mesh, GapiMeshHandle *out_mesh_handle) {
-
-    GapiMesh gpu_mesh = {.index_count = mesh->index_count};
-
-    PROPAGATE(upload_data(mesh->vertices,
-                          mesh->vertex_count * sizeof *mesh->vertices,
-                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                          &gpu_mesh.vertex_buffer,
-                          &gpu_mesh.vertex_memory));
-    PROPAGATE(upload_data(mesh->indices,
-                          mesh->index_count * sizeof *mesh->indices,
-                          VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                          &gpu_mesh.index_buffer,
-                          &gpu_mesh.index_memory));
-
-    GapiMeshHandle handle = meshes.count;
-    SYS_ERR(GapiMeshBuf_append(&meshes, &gpu_mesh));
-
-    *out_mesh_handle = handle;
-    return GAPI_SUCCESS;
-}
-
-GapiResult gapi_texture_upload(uint32_t *pixels,
-                               uint32_t width,
-                               uint32_t height,
-                               GapiTextureHandle *out_texture_handle) {
-
-    GapiTexture texture = {0};
-
-    VkDeviceSize image_size = width * height * sizeof *pixels;
-    VkBuffer staging_buffer;
-    VkDeviceMemory staging_buffer_memory;
-    create_buffer(image_size,
-                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-                  &staging_buffer,
-                  &staging_buffer_memory);
-
-    // Fill staging buffer
-    void *mapped_data;
-    VK_ERR(vkMapMemory(
-        logical_device, staging_buffer_memory, 0, image_size, 0, &mapped_data));
-    memcpy(mapped_data, pixels, image_size);
-    vkUnmapMemory(logical_device, staging_buffer_memory);
-
-    // Create image
-
-    PROPAGATE(create_image(width,
-                           height,
-                           VK_FORMAT_R8G8B8A8_SRGB,
-                           VK_IMAGE_TILING_OPTIMAL,
-                           VK_IMAGE_USAGE_SAMPLED_BIT |
-                               VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                           &texture.image,
-                           &texture.image_memory));
-
-    transition_image_layout(texture.image,
-                            VK_IMAGE_LAYOUT_UNDEFINED,
-                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                            0,
-                            VK_ACCESS_TRANSFER_WRITE_BIT,
-                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                            VK_PIPELINE_STAGE_TRANSFER_BIT,
-                            VK_IMAGE_ASPECT_COLOR_BIT);
-    copy_buffer_to_image(staging_buffer, texture.image, width, height);
-    transition_image_layout(texture.image,
-                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                            VK_ACCESS_TRANSFER_WRITE_BIT,
-                            VK_ACCESS_SHADER_READ_BIT,
-                            VK_PIPELINE_STAGE_TRANSFER_BIT,
-                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                            VK_IMAGE_ASPECT_COLOR_BIT);
-
-    VK_ERR(vkQueueWaitIdle(queue));
-    destroy_buffer(staging_buffer, staging_buffer_memory);
-
-    // Create image view
-
-    VkImageViewCreateInfo image_view_create_info = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = texture.image,
-        .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = VK_FORMAT_R8G8B8A8_SRGB,
-        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-    };
-    VK_ERR(vkCreateImageView(
-        logical_device, &image_view_create_info, NULL, &texture.image_view));
-
-    VkPhysicalDeviceProperties physical_device_properties;
-    vkGetPhysicalDeviceProperties(physical_device, &physical_device_properties);
-    int max_anisotropy = physical_device_properties.limits.maxSamplerAnisotropy;
-
-    VkSamplerCreateInfo sampler_create_info = {
-        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .magFilter = VK_FILTER_NEAREST,
-        .minFilter = VK_FILTER_NEAREST,
-        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-        .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .anisotropyEnable = VK_TRUE,
-        .maxAnisotropy = max_anisotropy,
-        .compareEnable = VK_FALSE,
-        .compareOp = VK_COMPARE_OP_ALWAYS,
-        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-        .unnormalizedCoordinates = VK_FALSE,
-    };
-
-    VK_ERR(vkCreateSampler(
-        logical_device, &sampler_create_info, NULL, &texture.sampler));
-
-    GapiTextureHandle handle = textures.count;
-    SYS_ERR(GapiTextureBuf_append(&textures, &texture));
-
-    *out_texture_handle = handle;
-    return GAPI_SUCCESS;
-}
-
-GapiResult gapi_object_create(GapiMeshHandle mesh_handle,
-                              GapiTextureHandle texture_handle,
-                              GapiObjectHandle *out_object_handle) {
-
-    GapiObject new_object = {
-        .mesh_handle = mesh_handle,
-        .texture_handle = texture_handle,
-        .model_matrix = GLM_MAT4_IDENTITY_INIT,
-    };
-    GapiObjectHandle handle = objects.count;
-    SYS_ERR(GapiObjectBuf_append(&objects, &new_object));
-
-    GapiObject *object = objects.data + handle;
-
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-        PROPAGATE(create_uniform_buffer(object->uniform_buffers + i,
-                                        object->uniform_buffer_memories + i,
-                                        object->uniform_buffer_mappings + i));
-    }
-
-    GapiTexture *texture = GapiTextureBuf_get(&textures, texture_handle);
-    if (texture == NULL)
-        return GAPI_SYSTEM_ERROR;
-
-    *out_object_handle = handle;
-    return GAPI_SUCCESS;
-}
-
-VkResult gapi_get_vulkan_error(void) {
-    return vulkan_error;
-}
-
-GapiResult gapi_render_begin(GapiCamera *camera) {
-
-    if (camera != NULL)
-        scene_camera = *camera;
-
-    VK_ERR(vkQueueWaitIdle(queue));
-
-    VkResult result =
-        vkAcquireNextImageKHR(logical_device,
-                              swapchain,
-                              UINT64_MAX,
-                              present_done_semaphores[frame_index],
-                              NULL,
-                              &image_index);
-
-    switch (result) {
-    case VK_SUCCESS:
-        break;
-
-    case VK_SUBOPTIMAL_KHR:
-    case VK_ERROR_OUT_OF_DATE_KHR:
-        PROPAGATE(recreate_swapchain());
-        PROPAGATE(gapi_render_begin(NULL));
-        return GAPI_SUCCESS;
-
-    default:
-        VK_ERR(result);
-    }
-
-    VkCommandBuffer cmd_buf = drawing_command_buffers[frame_index];
-
-    // Begin command buffer
-    VkCommandBufferBeginInfo begin_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    VK_ERR(vkBeginCommandBuffer(cmd_buf, &begin_info));
-
-    transition_image_layout(depth_image,
-                            VK_IMAGE_LAYOUT_UNDEFINED,
-                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                                VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                                VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                            VK_IMAGE_ASPECT_DEPTH_BIT);
-
-    transition_swapchain_image_layout(
-        VK_IMAGE_LAYOUT_UNDEFINED,
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        0,
-        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
-
-    // Black
-    VkClearValue clear_color = {.color = {.float32 = {0, 0, 0, 1}}};
-    VkClearValue clear_depth = {.depthStencil = {1, 0}};
-
-    VkRenderingAttachmentInfo color_att_info = {
-        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView = swapchain_images.image_views[image_index],
-        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .clearValue = clear_color,
-    };
-    VkRenderingAttachmentInfo depth_att_info = {
-        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-        .imageView = depth_image_view,
-        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .clearValue = clear_depth,
-    };
-    VkRenderingInfo rendering_info = {
-        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-        .renderArea = {.offset = {0, 0}, .extent = swap_extent},
-        .layerCount = 1,
-        .colorAttachmentCount = 1,
-        .pColorAttachments = &color_att_info,
-        .pDepthAttachment = &depth_att_info,
-    };
-
-    vkCmdBeginRendering(cmd_buf, &rendering_info);
-
-    //  TODO: Choose pipeline / shader index
-    vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines[0]);
-
-    VkViewport viewport = {0, 0, swap_extent.width, swap_extent.height, 0, 1};
-    vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
-    VkRect2D scissor = {.extent = swap_extent};
-    vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
-
-    return GAPI_SUCCESS;
-}
-
-GapiResult gapi_render_end(void) {
-
-    VkCommandBuffer cmd_buf = drawing_command_buffers[frame_index];
-
-    vkCmdEndRendering(cmd_buf);
-    transition_swapchain_image_layout(
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-        0,
-        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
-
-    vkEndCommandBuffer(cmd_buf);
-
-    VK_ERR(vkResetFences(logical_device, 1, &draw_fences[frame_index]));
-
-    VkPipelineStageFlags wait_destination_stage_mask =
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    VkSubmitInfo submit_info = {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .waitSemaphoreCount = 1,
-        .pWaitSemaphores = present_done_semaphores + frame_index,
-        .pWaitDstStageMask = &wait_destination_stage_mask,
-        .commandBufferCount = 1,
-        .pCommandBuffers = drawing_command_buffers + frame_index,
-        .signalSemaphoreCount = 1,
-        .pSignalSemaphores = rendering_done_semaphores + frame_index,
-    };
-    VK_ERR(vkQueueSubmit(queue, 1, &submit_info, draw_fences[frame_index]));
-    VK_ERR(vkWaitForFences(
-        logical_device, 1, draw_fences + frame_index, VK_TRUE, UINT64_MAX));
-
-    VkPresentInfoKHR present_info = {
-        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .waitSemaphoreCount = 1,
-        .pWaitSemaphores = rendering_done_semaphores + frame_index,
-        .swapchainCount = 1,
-        .pSwapchains = &swapchain,
-        .pImageIndices = &image_index,
-    };
-
-    frame_index = (frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
-
-    VkResult result = vkQueuePresentKHR(queue, &present_info);
-
-    switch (result) {
-    case VK_SUCCESS:
-        break;
-
-    case VK_SUBOPTIMAL_KHR:
-    case VK_ERROR_OUT_OF_DATE_KHR:
-        recreate_swapchain();
-        break;
-
-    default:
-        VK_ERR(result);
-    }
-
-    if (has_window_resized)
-        recreate_swapchain();
-
-    return GAPI_SUCCESS;
-}
-
-static inline void update_uniform_buffer(GapiObject *object, mat4 *matrix) {
-
-    UBOData ubo_data = {
-        .view = GLM_MAT4_IDENTITY_INIT,
-        .projection = GLM_MAT4_IDENTITY_INIT,
-    };
-    memcpy(ubo_data.model, matrix, sizeof(mat4));
-
-    float aspect_ratio = (float)swap_extent.width / swap_extent.height;
-
-    glm_lookat(
-        scene_camera.pos, scene_camera.target, scene_camera.up, ubo_data.view);
-    glm_perspective(DEG_TO_RAD * scene_camera.fov_degrees,
-                    aspect_ratio,
-                    0.1,
-                    100,
-                    ubo_data.projection);
-    ubo_data.projection[1][1] *= -1;
-
-    memcpy(object->uniform_buffer_mappings[frame_index],
-           &ubo_data,
-           sizeof ubo_data);
-}
-
-void gapi_object_draw(GapiObjectHandle object_handle, mat4 *matrix) {
-    VkCommandBuffer cmd_buf = drawing_command_buffers[frame_index];
-    GapiObject *object = GapiObjectBuf_get(&objects, object_handle);
-    assert(object != NULL);
-    GapiMesh *mesh = meshes.data + object->mesh_handle;
-
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(cmd_buf, 0, 1, &mesh->vertex_buffer, &offset);
-    vkCmdBindIndexBuffer(cmd_buf, mesh->index_buffer, 0, VK_INDEX_TYPE_UINT32);
-
-    update_uniform_buffer(object, matrix);
-
-    GapiTexture *texture =
-        GapiTextureBuf_get(&textures, object->texture_handle);
-    if (texture == NULL) {
-        ERROR("asd");
-        exit(EXIT_FAILURE);
-    }
-    push_descriptor_set(texture, object->uniform_buffers);
-
-    vkCmdDrawIndexed(cmd_buf, mesh->index_count, 1, 0, 0, 0);
-}
-
-int gapi_window_should_close(void) {
-    glfwPollEvents();
-    return glfwWindowShouldClose(window);
-}
-
-const char *gapi_strerror(GapiResult result) {
-    switch (result) {
-    case GAPI_SUCCESS:
-        return "Success";
-    case GAPI_ERROR_GENERIC:
-        return "Unknown error";
-    case GAPI_SYSTEM_ERROR:
-        return "A system error occurred, check errno";
-    case GAPI_VULKAN_ERROR:
-        return "A vulkan error occurred, check gapi_get_vulkan_error()";
-    case GAPI_GLFW_ERROR:
-        return "A glfw error occurred";
-    case GAPI_NO_DEVICE_FOUND:
-        return "No suitable physical device found";
-    case GAPI_VULKAN_FEATURE_UNSUPPORTED:
-        return "A required Vulkan feature is not supported";
-    }
 }

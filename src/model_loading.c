@@ -31,7 +31,7 @@ Vec2Buf tmp_uvs = {0};
         return MLD_SYSTEM_ERROR;
 
 static inline MldResult
-load_obj(size_t file_size, char *file_data, Mesh *out_mesh) {
+load_obj(size_t file_size, char *file_data, MeshData *out_mesh) {
 
     size_t vertices_start = vertices.count;
     size_t indices_start = indices.count;
@@ -211,7 +211,7 @@ load_obj(size_t file_size, char *file_data, Mesh *out_mesh) {
     //     INFO("index \t%s%u", tabs[i % 3], indices.data[i]);
     // }
 
-    *out_mesh = (Mesh){
+    *out_mesh = (MeshData){
         .vertex_count = vertices.count - vertices_start,
         .index_count = indices.count - indices_start,
         .vertices = vertices.data + vertices_start,
@@ -220,7 +220,7 @@ load_obj(size_t file_size, char *file_data, Mesh *out_mesh) {
     return MLD_SUCCESS;
 }
 
-MldResult mld_load_file(const char *filepath, Mesh *out_mesh) {
+MldResult mld_load_file(const char *filepath, MeshData *out_mesh) {
 
     char *extension = strrchr(filepath, '.');
 

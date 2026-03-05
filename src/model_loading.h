@@ -14,8 +14,8 @@
 #include <stdlib.h>
 
 #include "cglm/types-struct.h"
-#include "gfx.h"
 #include "log.h"
+#include "types.h"
 
 #define STR(x) #x
 #define MLD_ERR_MSG(result, message)                                           \
@@ -49,7 +49,7 @@ void mld_free(void);
 // Returns the error code.
 //
 // Supported file formats: .obj
-MldResult mld_load_file(const char *filepath, Mesh *out_mesh);
+MldResult mld_load_file(const char *filepath, MeshData *out_mesh);
 const char *mld_strerror(MldResult result);
 
 #endif
