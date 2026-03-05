@@ -44,6 +44,7 @@ Will free memory associated with this datatype.
 
 #include <stddef.h>
 #include <stdlib.h>
+#include <string.h>
 
 #ifndef VEC_STARTING_SIZE
 #define VEC_STARTING_SIZE 8

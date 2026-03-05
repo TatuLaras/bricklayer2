@@ -26,7 +26,7 @@ IntBuf tmp_vertex_uv_indices = {0};
 Vec3Buf tmp_normals = {0};
 Vec2Buf tmp_uvs = {0};
 
-#define MLD_SYS_ERR(result)                                                    \
+#define SYS_ERR(result)                                                        \
     if ((result) < 0)                                                          \
         return MLD_SYSTEM_ERROR;
 
@@ -71,9 +71,9 @@ load_obj(size_t file_size, char *file_data, Mesh *out_mesh) {
                         .y = atof(symbol[2]),
                         .z = atof(symbol[3])},
             };
-            MLD_SYS_ERR(VertexBuf_append(&vertices, &vertex));
+            SYS_ERR(VertexBuf_append(&vertices, &vertex));
             uint32_t max = UINT32_MAX;
-            MLD_SYS_ERR(IntBuf_append(&tmp_vertex_uv_indices, &max));
+            SYS_ERR(IntBuf_append(&tmp_vertex_uv_indices, &max));
         }
 
         // Vertex normal
@@ -84,7 +84,7 @@ load_obj(size_t file_size, char *file_data, Mesh *out_mesh) {
             vec3s vertex_normal = {.x = atof(symbol[1]),
                                    .y = atof(symbol[2]),
                                    .z = atof(symbol[3])};
-            MLD_SYS_ERR(Vec3Buf_append(&tmp_normals, &vertex_normal));
+            SYS_ERR(Vec3Buf_append(&tmp_normals, &vertex_normal));
         }
 
         // UV coordinate
@@ -96,7 +96,7 @@ load_obj(size_t file_size, char *file_data, Mesh *out_mesh) {
             if (param_count >= 3)
                 uv.v = atof(symbol[2]);
 
-            MLD_SYS_ERR(Vec2Buf_append(&tmp_uvs, &uv));
+            SYS_ERR(Vec2Buf_append(&tmp_uvs, &uv));
         }
 
         param_count = 0;
@@ -164,9 +164,9 @@ load_obj(size_t file_size, char *file_data, Mesh *out_mesh) {
 
                     vert_index = vertices.count - vertices_start;
                     Vertex new_vertex = *vertex;
-                    MLD_SYS_ERR(VertexBuf_append(&vertices, &new_vertex));
+                    SYS_ERR(VertexBuf_append(&vertices, &new_vertex));
                     uint32_t max = UINT32_MAX;
-                    MLD_SYS_ERR(IntBuf_append(&tmp_vertex_uv_indices, &max));
+                    SYS_ERR(IntBuf_append(&tmp_vertex_uv_indices, &max));
 
                     vertex = VertexBuf_get(&vertices, vertices.count - 1);
                     if (vertex == NULL)
@@ -183,7 +183,7 @@ load_obj(size_t file_size, char *file_data, Mesh *out_mesh) {
 
                 *old_uv_index = uv_index;
 
-                MLD_SYS_ERR(IntBuf_append(&indices, &vert_index));
+                SYS_ERR(IntBuf_append(&indices, &vert_index));
             }
         }
 
@@ -272,11 +272,11 @@ MldResult mld_load_file(const char *filepath, Mesh *out_mesh) {
 
 MldResult mld_init(void) {
 
-    MLD_SYS_ERR(VertexBuf_init(&vertices));
-    MLD_SYS_ERR(IntBuf_init(&indices));
-    MLD_SYS_ERR(Vec3Buf_init(&tmp_normals));
-    MLD_SYS_ERR(IntBuf_init(&tmp_vertex_uv_indices));
-    MLD_SYS_ERR(Vec2Buf_init(&tmp_uvs));
+    SYS_ERR(VertexBuf_init(&vertices));
+    SYS_ERR(IntBuf_init(&indices));
+    SYS_ERR(Vec3Buf_init(&tmp_normals));
+    SYS_ERR(IntBuf_init(&tmp_vertex_uv_indices));
+    SYS_ERR(Vec2Buf_init(&tmp_uvs));
 
     return MLD_SUCCESS;
 }

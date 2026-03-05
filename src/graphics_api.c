@@ -1,8 +1,10 @@
 #include "graphics_api.h"
 
-#include "cglm/types.h"
+#include "cglm/cglm.h"
 #include "log.h"
 #include "math_macros.h"
+// #define VEC_INLINE_FUNCTIONS
+#include "vec.h"
 
 #include <vulkan/vk_enum_string_helper.h>
 #include <vulkan/vulkan.h>
@@ -10,36 +12,102 @@
 #include <GLFW/glfw3.h>
 
 #define STR(x) #x
-#define VK_ERR_MSG(result, message)                                            \
+// #define VK_ERR_MSG(result, message)                                            \
+//     {                                                                          \
+//         VkResult __res = result;                                               \
+//         if (__res != VK_SUCCESS) {                                             \
+//             ERROR(message ": %s", string_VkResult(__res));                     \
+//             exit(EXIT_FAILURE);                                                \
+//         }                                                                      \
+//     }
+// #define VK_ERR(result) VK_ERR_MSG(result, STR(result))
+
+#define SYS_ERR(result)                                                        \
+    if ((result) < 0)                                                          \
+        return GFX_SYSTEM_ERROR;
+
+#define GAPI_DEBUG_PRINT // TODO: remove
+
+#ifdef GAPI_DEBUG_PRINT
+#define VK_ERR(result)                                                         \
     {                                                                          \
         VkResult __res = result;                                               \
         if (__res != VK_SUCCESS) {                                             \
-            ERROR(message ": %s", string_VkResult(__res));                     \
-            exit(EXIT_FAILURE);                                                \
+            ERROR(STR(result) ": %s", string_VkResult(__res));                 \
+            vulkan_error = __res;                                              \
+            return GFX_VULKAN_ERROR;                                           \
         }                                                                      \
     }
-#define VK_ERR(result) VK_ERR_MSG(result, STR(result))
+#else
+#define VK_ERR(result)                                                         \
+    {                                                                          \
+        VkResult __res = result;                                               \
+        if (__res != VK_SUCCESS) {                                             \
+            vulkan_error = __res;                                              \
+            return GFX_VULKAN_ERROR;                                           \
+        }                                                                      \
+    }
+#endif
+
+#define PROPAGATE(result)                                                      \
+    {                                                                          \
+        GfxResult __res = result;                                              \
+        if (__res != GFX_SUCCESS) {                                            \
+            return __res;                                                      \
+        }                                                                      \
+    }
 
 #define MAX_FRAMES_IN_FLIGHT 2
 #define SWAPCHAIN_MAX_IMAGES 16
 
-// typedef struct {
-//     mat4 model;
-//     mat4 view;
-//     mat4 projection;
-// } UBOData;
+typedef struct {
+    mat4 model;
+    mat4 view;
+    mat4 projection;
+} UBOData;
+
+typedef struct {
+    VkBuffer vertex_buffer;
+    VkBuffer index_buffer;
+    VkDeviceMemory vertex_memory;
+    VkDeviceMemory index_memory;
+    uint32_t index_count;
+} GapiMesh;
+
+typedef struct {
+    GapiMeshHandle mesh_handle;
+    vec4 model_matrix[4];
+    VkBuffer uniform_buffers[MAX_FRAMES_IN_FLIGHT];
+    VkDeviceMemory uniform_buffer_memories[MAX_FRAMES_IN_FLIGHT];
+    void *uniform_buffer_mappings[MAX_FRAMES_IN_FLIGHT];
+    VkDescriptorSet descriptor_sets[MAX_FRAMES_IN_FLIGHT];
+} GapiObject;
+
+typedef struct {
+    VkImage image;
+    VkDeviceMemory image_memory;
+    VkImageView image_view;
+    VkSampler sampler;
+} GapiTexture;
+
+VEC(GapiObject, GapiObjectBuf)
+VEC(GapiMesh, GapiMeshBuf)
+VEC(GapiTexture, GapiTextureBuf)
+
+static VkResult vulkan_error;
+static uint32_t frame_index = 0;
+static uint32_t image_index;
 
 static GLFWwindow *window = NULL;
 static int has_window_resized = 0;
 
 static VkInstance instance = NULL;
 static VkSurfaceKHR surface = NULL;
-
+static VkSurfaceFormatKHR surface_format = {0};
 static VkPhysicalDevice physical_device = NULL;
 static VkDevice logical_device = NULL;
 static uint32_t queue_index = 0;
 static VkQueue queue = 0;
-
 static VkExtent2D swap_extent = {0};
 static VkSwapchainKHR swapchain = 0;
 static struct {
@@ -48,23 +116,27 @@ static struct {
     VkImageView image_views[SWAPCHAIN_MAX_IMAGES];
 } swapchain_images = {.count = SWAPCHAIN_MAX_IMAGES};
 
+static VkSemaphore present_done_semaphores[MAX_FRAMES_IN_FLIGHT] = {0};
+static VkSemaphore rendering_done_semaphores[MAX_FRAMES_IN_FLIGHT] = {0};
+static VkFence draw_fences[MAX_FRAMES_IN_FLIGHT] = {0};
+
 static VkCommandPool command_pool = NULL;
 static VkCommandBuffer drawing_command_buffers[MAX_FRAMES_IN_FLIGHT] = {0};
 
 static VkImage depth_image = NULL;
 static VkDeviceMemory depth_image_memory;
 static VkImageView depth_image_view;
-
-// static VkBuffer uniform_buffers[MAX_FRAMES_IN_FLIGHT] = {0};
-// static VkDeviceMemory uniform_buffer_memories[MAX_FRAMES_IN_FLIGHT] = {0};
-// static void *uniform_buffer_mappings[MAX_FRAMES_IN_FLIGHT] = {0};
-// static VkDescriptorSet descriptor_sets[MAX_FRAMES_IN_FLIGHT] = {0};
+static VkFormat depth_format = 0;
 
 static VkDescriptorPool descriptor_pool = NULL;
 static VkDescriptorSetLayout descriptor_set_layout = NULL;
 
 static VkPipeline *pipelines = NULL;
 static VkPipelineLayout pipeline_layout = NULL;
+
+static GapiObjectBuf objects = {0};
+static GapiMeshBuf meshes = {0};
+static GapiTextureBuf textures = {0};
 
 static void
 window_resize_callback(GLFWwindow *_window, int _width, int _height) {
@@ -75,10 +147,10 @@ window_resize_callback(GLFWwindow *_window, int _width, int _height) {
     has_window_resized = 1;
 }
 
-static inline void init_window(uint32_t width,
-                               uint32_t height,
-                               const char *title,
-                               GfxWindowFlags flags) {
+static inline GfxResult init_window(uint32_t width,
+                                    uint32_t height,
+                                    const char *title,
+                                    GfxWindowFlags flags) {
 
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -94,12 +166,14 @@ static inline void init_window(uint32_t width,
         const char *msg = 0;
         glfwGetError(&msg);
         ERROR("%s", msg);
-        exit(EXIT_FAILURE);
+        return GFX_GLFW_ERROR;
     }
     glfwSetFramebufferSizeCallback(window, window_resize_callback);
+
+    return GFX_SUCCESS;
 }
 
-static inline void create_instance(void) {
+static inline GfxResult create_instance(void) {
 #ifdef DEBUG
     const char *validation_layer_name = "VK_LAYER_KHRONOS_validation";
 
@@ -121,7 +195,7 @@ static inline void create_instance(void) {
 
     if (!layer_supported) {
         ERROR("validation layer %s is not supported", validation_layer_name);
-        exit(EXIT_FAILURE);
+        return GFX_VULKAN_FEATURE_UNSUPPORTED;
     }
 
 #endif
@@ -175,7 +249,7 @@ static inline void create_instance(void) {
         if (!extension_supported) {
             ERROR("extension %s not supported",
                   required_extensions[required_i]);
-            exit(EXIT_FAILURE);
+            return GFX_VULKAN_FEATURE_UNSUPPORTED;
         }
     }
 
@@ -197,10 +271,12 @@ static inline void create_instance(void) {
     };
     VK_ERR(vkCreateInstance(&create_info, NULL, &instance));
     free(required_extensions);
+
+    return GFX_SUCCESS;
 }
 
-static inline int find_queue(VkPhysicalDevice device,
-                             uint32_t *out_queue_index) {
+static inline GfxResult find_queue(VkPhysicalDevice device,
+                                   uint32_t *out_queue_index) {
 
     uint32_t queue_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_count, NULL);
@@ -220,13 +296,13 @@ static inline int find_queue(VkPhysicalDevice device,
             continue;
 
         *out_queue_index = i;
-        return 0;
+        return GFX_SUCCESS;
     }
 
-    return -1;
+    return GFX_ERROR_GENERIC;
 }
 
-static inline void pick_physical_device(void) {
+static inline GfxResult pick_physical_device(void) {
 
     uint32_t device_count = 0;
     VK_ERR(vkEnumeratePhysicalDevices(instance, &device_count, NULL));
@@ -241,18 +317,18 @@ static inline void pick_physical_device(void) {
         VkPhysicalDeviceProperties device_properties;
         vkGetPhysicalDeviceProperties(devices[i], &device_properties);
 
-        if (find_queue(devices[i], &queue_index) < 0)
+        if (find_queue(devices[i], &queue_index) != GFX_SUCCESS)
             continue;
 
         physical_device = devices[i];
-        return;
+        return GFX_SUCCESS;
     }
 
     ERROR("no suitable GPU found");
-    exit(EXIT_FAILURE);
+    return GFX_NO_DEVICE_FOUND;
 }
 
-static inline void create_logical_device(void) {
+static inline GfxResult create_logical_device(void) {
     VkPhysicalDeviceExtendedDynamicStateFeaturesEXT f1 = {
         .sType =
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT,
@@ -296,9 +372,11 @@ static inline void create_logical_device(void) {
     VK_ERR(vkCreateDevice(
         physical_device, &device_create_info, NULL, &logical_device));
     vkGetDeviceQueue(logical_device, queue_index, 0, &queue);
+
+    return GFX_SUCCESS;
 }
 
-static inline void create_swapchain(VkSurfaceFormatKHR *out_surface_format) {
+static inline GfxResult create_swapchain(void) {
 
     VkSurfaceCapabilitiesKHR surface_capabilities;
     VK_ERR(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
@@ -329,13 +407,13 @@ static inline void create_swapchain(VkSurfaceFormatKHR *out_surface_format) {
 
     ERR(format_count == 0, "no formats");
 
-    *out_surface_format = *formats;
+    surface_format = *formats;
     for (uint32_t i = 0; i < format_count; i++) {
         if (formats[i].format != VK_FORMAT_B8G8R8A8_SRGB)
             continue;
         if (formats[i].colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
             continue;
-        *out_surface_format = formats[i];
+        surface_format = formats[i];
         break;
     }
 
@@ -366,15 +444,15 @@ static inline void create_swapchain(VkSurfaceFormatKHR *out_surface_format) {
 
     if (present_mode == VK_PRESENT_MODE_MAX_ENUM_KHR) {
         ERROR("no suitable present mode found");
-        exit(EXIT_FAILURE);
+        return GFX_VULKAN_FEATURE_UNSUPPORTED;
     }
 
     VkSwapchainCreateInfoKHR swapchain_create_info = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = surface,
         .minImageCount = min_image_count,
-        .imageFormat = out_surface_format->format,
-        .imageColorSpace = out_surface_format->colorSpace,
+        .imageFormat = surface_format.format,
+        .imageColorSpace = surface_format.colorSpace,
         .imageExtent = swap_extent,
         .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
@@ -397,7 +475,7 @@ static inline void create_swapchain(VkSurfaceFormatKHR *out_surface_format) {
     VkImageViewCreateInfo image_view_create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = out_surface_format->format,
+        .format = surface_format.format,
         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
     };
     for (uint32_t i = 0; i < swapchain_images.count; i++) {
@@ -407,9 +485,11 @@ static inline void create_swapchain(VkSurfaceFormatKHR *out_surface_format) {
                                  NULL,
                                  swapchain_images.image_views + i));
     }
+
+    return GFX_SUCCESS;
 }
 
-static inline void create_drawing_command_buffers(void) {
+static inline GfxResult create_drawing_command_buffers(void) {
 
     // Create command pool
     VkCommandPoolCreateInfo command_pool_create_info = {
@@ -428,10 +508,13 @@ static inline void create_drawing_command_buffers(void) {
     };
     VK_ERR(vkAllocateCommandBuffers(
         logical_device, &alloc_info, drawing_command_buffers));
+
+    return GFX_SUCCESS;
 }
 
-static inline uint32_t find_memory_type(VkMemoryRequirements requirements,
-                                        VkMemoryPropertyFlags flags) {
+static inline GfxResult find_memory_type(VkMemoryRequirements requirements,
+                                         VkMemoryPropertyFlags flags,
+                                         uint32_t *out_memory_type) {
 
     VkPhysicalDeviceMemoryProperties memory_properties;
     vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
@@ -448,22 +531,21 @@ static inline uint32_t find_memory_type(VkMemoryRequirements requirements,
         break;
     }
 
-    if (selected_memory_type < 0) {
-        ERROR("no suitable memory type found for buffer");
-        exit(EXIT_FAILURE);
-    }
+    if (selected_memory_type < 0)
+        return GFX_VULKAN_FEATURE_UNSUPPORTED;
 
-    return selected_memory_type;
+    *out_memory_type = selected_memory_type;
+    return GFX_SUCCESS;
 }
 
-static inline void create_image(uint32_t width,
-                                uint32_t height,
-                                VkFormat format,
-                                VkImageTiling tiling,
-                                VkImageUsageFlags usage,
-                                VkMemoryPropertyFlags properties,
-                                VkImage *out_image,
-                                VkDeviceMemory *out_memory) {
+static inline GfxResult create_image(uint32_t width,
+                                     uint32_t height,
+                                     VkFormat format,
+                                     VkImageTiling tiling,
+                                     VkImageUsageFlags usage,
+                                     VkMemoryPropertyFlags properties,
+                                     VkImage *out_image,
+                                     VkDeviceMemory *out_memory) {
 
     VkImageCreateInfo image_create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -488,16 +570,20 @@ static inline void create_image(uint32_t width,
     VkMemoryAllocateInfo alloc_info = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = memory_requirements.size,
-        .memoryTypeIndex = find_memory_type(memory_requirements, properties),
     };
+    PROPAGATE(find_memory_type(
+        memory_requirements, properties, &alloc_info.memoryTypeIndex));
     VK_ERR(vkAllocateMemory(logical_device, &alloc_info, NULL, out_memory));
     VK_ERR(vkBindImageMemory(logical_device, *out_image, *out_memory, 0));
+
+    return GFX_SUCCESS;
 }
 
-static inline VkFormat find_supported_format(uint32_t candidates_count,
-                                             VkFormat *candidates,
-                                             VkImageTiling tiling,
-                                             VkFormatFeatureFlags flags) {
+static inline GfxResult find_supported_depth_format(uint32_t candidates_count,
+                                                    VkFormat *candidates,
+                                                    VkImageTiling tiling,
+                                                    VkFormatFeatureFlags flags,
+                                                    VkFormat *out_format) {
 
     for (uint32_t i = 0; i < candidates_count; i++) {
 
@@ -506,51 +592,58 @@ static inline VkFormat find_supported_format(uint32_t candidates_count,
             physical_device, candidates[i], &properties);
 
         if (tiling == VK_IMAGE_TILING_LINEAR &&
-            (properties.linearTilingFeatures & flags) == flags)
-            return candidates[i];
+            (properties.linearTilingFeatures & flags) == flags) {
+            *out_format = candidates[i];
+            return GFX_SUCCESS;
+        }
         if (tiling == VK_IMAGE_TILING_OPTIMAL &&
-            (properties.optimalTilingFeatures & flags) == flags)
-            return candidates[i];
+            (properties.optimalTilingFeatures & flags) == flags) {
+            *out_format = candidates[i];
+            return GFX_SUCCESS;
+        }
     }
 
-    ERROR("no suitable format found for depth buffer");
-    exit(EXIT_FAILURE);
+    return GFX_VULKAN_FEATURE_UNSUPPORTED;
 }
 
-static inline void create_depth_resources(VkFormat *out_depth_format) {
+static inline GfxResult create_depth_resources(void) {
 
     VkFormat format_candidates[] = {
         VK_FORMAT_D32_SFLOAT,
         VK_FORMAT_D32_SFLOAT_S8_UINT,
         VK_FORMAT_D24_UNORM_S8_UINT,
     };
-    *out_depth_format =
-        find_supported_format(COUNT(format_candidates),
-                              format_candidates,
-                              VK_IMAGE_TILING_OPTIMAL,
-                              VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    PROPAGATE(find_supported_depth_format(
+        COUNT(format_candidates),
+        format_candidates,
+        VK_IMAGE_TILING_OPTIMAL,
+        VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        &depth_format));
 
-    create_image(swap_extent.width,
-                 swap_extent.height,
-                 *out_depth_format,
-                 VK_IMAGE_TILING_OPTIMAL,
-                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                 &depth_image,
-                 &depth_image_memory);
+    PROPAGATE(create_image(swap_extent.width,
+                           swap_extent.height,
+                           depth_format,
+                           VK_IMAGE_TILING_OPTIMAL,
+                           VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                           &depth_image,
+                           &depth_image_memory));
 
     VkImageViewCreateInfo image_view_create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = depth_image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = *out_depth_format,
+        .format = depth_format,
         .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
     };
     VK_ERR(vkCreateImageView(
         logical_device, &image_view_create_info, NULL, &depth_image_view));
+
+    return GFX_SUCCESS;
 }
 
-static inline void create_descriptor_set_layout(void) {
+//  TODO: Depends on the shader used, dynamically create?
+static inline GfxResult create_descriptor_set_layout(void) {
 
     VkDescriptorSetLayoutBinding layout_bindings[] = {
         {
@@ -573,110 +666,102 @@ static inline void create_descriptor_set_layout(void) {
     };
     VK_ERR(vkCreateDescriptorSetLayout(
         logical_device, &layout_create_info, NULL, &descriptor_set_layout));
+
+    return GFX_SUCCESS;
 }
 
-// static inline void create_uniform_buffers(void) {
-//
-//     memset(uniform_buffers, 0, sizeof uniform_buffers);
-//     memset(uniform_buffer_memories, 0, sizeof uniform_buffer_memories);
-//     memset(uniform_buffer_mappings, 0, sizeof uniform_buffer_mappings);
-//
-//     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-//
-//         VkDeviceSize size = sizeof(UBOData);
-//         create_buffer(size,
-//                       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-//                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-//                           VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-//                       uniform_buffers + i,
-//                       uniform_buffer_memories + i);
-//
-//         VK_ERR(vkMapMemory(logical_device,
-//                            uniform_buffer_memories[i],
-//                            0,
-//                            size,
-//                            0,
-//                            uniform_buffer_mappings + i));
-//     }
-// }
+static inline GfxResult create_descriptor_pool(void) {
 
-static inline void create_descriptor_pool(void) {
+    if (objects.count == 0)
+        return GFX_SUCCESS;
+
+    if (descriptor_pool != NULL) {
+        vkDestroyDescriptorPool(logical_device, descriptor_pool, NULL);
+        descriptor_pool = NULL;
+    }
 
     // Create descriptor pool
     VkDescriptorPoolSize pool_sizes[] = {
         {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-         .descriptorCount = MAX_FRAMES_IN_FLIGHT},
+         .descriptorCount = MAX_FRAMES_IN_FLIGHT * objects.count},
         {.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-         .descriptorCount = MAX_FRAMES_IN_FLIGHT},
+         .descriptorCount = MAX_FRAMES_IN_FLIGHT * objects.count},
     };
     VkDescriptorPoolCreateInfo pool_create_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        // .flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        .maxSets = MAX_FRAMES_IN_FLIGHT,
+        .maxSets = MAX_FRAMES_IN_FLIGHT * objects.count,
         .poolSizeCount = 2,
         .pPoolSizes = pool_sizes,
     };
     VK_ERR(vkCreateDescriptorPool(
         logical_device, &pool_create_info, NULL, &descriptor_pool));
+
+    return GFX_SUCCESS;
 }
 
-// static inline void create_descriptor_sets(void) {
-//
-//     VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT] = {0};
-//
-//     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
-//         layouts[i] = descriptor_set_layout;
-//
-//     VkDescriptorSetAllocateInfo descriptor_set_alloc_info = {
-//         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-//         .descriptorPool = descriptor_pool,
-//         .descriptorSetCount = MAX_FRAMES_IN_FLIGHT,
-//         .pSetLayouts = layouts,
-//     };
-//     VK_ERR(vkAllocateDescriptorSets(
-//         logical_device, &descriptor_set_alloc_info, descriptor_sets));
-//
-//     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-//
-//         VkDescriptorBufferInfo buf_info = {
-//             .buffer = uniform_buffers[i],
-//             .offset = 0,
-//             .range = sizeof(UBOData),
-//         };
-//         VkDescriptorImageInfo image_info = {
-//             .sampler = sampler,
-//             .imageView = texture_image_view,
-//             .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-//         };
-//         VkWriteDescriptorSet descriptor_writes[] = {
-//             {
-//                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-//                 .dstSet = descriptor_sets[i],
-//                 .dstBinding = 0,
-//                 .dstArrayElement = 0,
-//                 .descriptorCount = 1,
-//                 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-//                 .pBufferInfo = &buf_info,
-//             },
-//             {
-//                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-//                 .dstSet = descriptor_sets[i],
-//                 .dstBinding = 1,
-//                 .dstArrayElement = 0,
-//                 .descriptorCount = 1,
-//                 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-//                 .pImageInfo = &image_info,
-//             },
-//         };
-//         vkUpdateDescriptorSets(logical_device, 2, descriptor_writes, 0,
-//         NULL);
-//     }
-// }
+static inline GfxResult
+create_descriptor_sets(uint32_t descriptor_set_count,
+                       VkBuffer *uniform_buffers,
+                       GapiTexture *texture,
+                       VkDescriptorSet *out_descriptor_sets) {
 
-static inline void create_graphics_pipeline(VkSurfaceFormatKHR surface_format,
-                                            VkFormat depth_format,
-                                            GfxShader shader,
-                                            VkPipeline *out_pipeline) {
+    VkDescriptorSetLayout layouts[descriptor_set_count];
+    for (uint32_t i = 0; i < descriptor_set_count; i++)
+        layouts[i] = descriptor_set_layout;
+
+    VkDescriptorSetAllocateInfo descriptor_set_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = descriptor_pool,
+        .descriptorSetCount = descriptor_set_count,
+        .pSetLayouts = layouts,
+    };
+    VK_ERR(vkAllocateDescriptorSets(
+        logical_device, &descriptor_set_alloc_info, out_descriptor_sets));
+
+    for (uint32_t i = 0; i < descriptor_set_count; i++) {
+
+        VkDescriptorBufferInfo buf_info = {
+            .buffer = uniform_buffers[i],
+            .offset = 0,
+            .range = sizeof(UBOData),
+        };
+        VkDescriptorImageInfo image_info = {
+            .sampler = texture->sampler,
+            .imageView = texture->image_view,
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        };
+        VkWriteDescriptorSet descriptor_writes[] = {
+            {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = out_descriptor_sets[i],
+                .dstBinding = 0,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .pBufferInfo = &buf_info,
+            },
+            {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = out_descriptor_sets[i],
+                .dstBinding = 1,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo = &image_info,
+            },
+        };
+        vkUpdateDescriptorSets(logical_device,
+                               COUNT(descriptor_writes),
+                               descriptor_writes,
+                               0,
+                               NULL);
+    }
+
+    return GFX_SUCCESS;
+}
+
+static inline GfxResult create_graphics_pipeline(GfxShader shader,
+                                                 VkPipeline *out_pipeline) {
 
     VkShaderModule shader_module;
     VkShaderModuleCreateInfo shader_module_create_info = {
@@ -830,41 +915,734 @@ static inline void create_graphics_pipeline(VkSurfaceFormatKHR surface_format,
         logical_device, NULL, 1, &graphics, NULL, out_pipeline));
 
     vkDestroyShaderModule(logical_device, shader_module, NULL);
+
+    return GFX_SUCCESS;
 }
 
-void gapi_init(GfxInitInfo *info) {
+static inline GfxResult
+create_buffer(VkDeviceSize size,
+              VkBufferUsageFlags usage,
+              VkMemoryPropertyFlags memory_property_flags,
+              VkBuffer *out_buffer,
+              VkDeviceMemory *out_memory) {
 
-    init_window(info->window.width,
-                info->window.height,
-                info->window.title,
-                info->window.flags);
+    // Create buffer
+    VkBufferCreateInfo buffer_create_info = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = size,
+        .usage = usage,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    VK_ERR(
+        vkCreateBuffer(logical_device, &buffer_create_info, NULL, out_buffer));
 
-    create_instance();
+    // Get memory requirements and determine memory type
+    VkMemoryRequirements memory_requirements;
+    vkGetBufferMemoryRequirements(
+        logical_device, *out_buffer, &memory_requirements);
+
+    uint32_t selected_memory_type;
+    PROPAGATE(find_memory_type(
+        memory_requirements, memory_property_flags, &selected_memory_type));
+
+    // Allocate and bind
+    VkMemoryAllocateInfo memory_allocate_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = memory_requirements.size,
+        .memoryTypeIndex = selected_memory_type,
+    };
+    VK_ERR(vkAllocateMemory(
+        logical_device, &memory_allocate_info, NULL, out_memory));
+
+    VK_ERR(vkBindBufferMemory(logical_device, *out_buffer, *out_memory, 0));
+
+    return GFX_SUCCESS;
+}
+
+static inline GfxResult
+begin_single_time_commands(VkCommandBuffer *command_buffer) {
+
+    VkCommandBufferAllocateInfo alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = command_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    VK_ERR(
+        vkAllocateCommandBuffers(logical_device, &alloc_info, command_buffer));
+
+    VkCommandBufferBeginInfo begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    VK_ERR(vkBeginCommandBuffer(*command_buffer, &begin_info));
+
+    return GFX_SUCCESS;
+}
+
+static inline GfxResult
+end_single_time_commands(VkCommandBuffer command_buffer) {
+
+    VK_ERR(vkEndCommandBuffer(command_buffer));
+
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &command_buffer,
+    };
+    VK_ERR(vkQueueSubmit(queue, 1, &submit_info, NULL));
+    VK_ERR(vkQueueWaitIdle(queue));
+
+    return GFX_SUCCESS;
+}
+
+static inline void buffer_copy(VkBuffer dst, VkBuffer src, VkDeviceSize size) {
+
+    VkCommandBuffer command_buffer;
+    begin_single_time_commands(&command_buffer);
+
+    // Copy command
+    VkBufferCopy regions = {
+        .srcOffset = 0,
+        .dstOffset = 0,
+        .size = size,
+    };
+    vkCmdCopyBuffer(command_buffer, src, dst, 1, &regions);
+
+    end_single_time_commands(command_buffer);
+}
+
+static inline void destroy_buffer(VkBuffer buffer, VkDeviceMemory memory) {
+    vkFreeMemory(logical_device, memory, NULL);
+    vkDestroyBuffer(logical_device, buffer, NULL);
+}
+
+static inline GfxResult upload_data(void *data,
+                                    uint32_t size,
+                                    VkBufferUsageFlagBits usage,
+                                    VkBuffer *out_buffer,
+                                    VkDeviceMemory *out_memory) {
+
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_buffer_memory;
+    PROPAGATE(create_buffer(size,
+                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                            &staging_buffer,
+                            &staging_buffer_memory));
+
+    PROPAGATE(create_buffer(size,
+                            VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
+                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                            out_buffer,
+                            out_memory));
+
+    // Fill staging buffer
+    void *mapped_data;
+    VK_ERR(vkMapMemory(
+        logical_device, staging_buffer_memory, 0, size, 0, &mapped_data));
+    memcpy(mapped_data, data, size);
+    vkUnmapMemory(logical_device, staging_buffer_memory);
+
+    // Copy from staging buffer to actual buffer
+    buffer_copy(*out_buffer, staging_buffer, size);
+
+    VK_ERR(vkQueueWaitIdle(queue));
+    destroy_buffer(staging_buffer, staging_buffer_memory);
+
+    return GFX_SUCCESS;
+}
+
+static inline GfxResult create_uniform_buffer(VkBuffer *out_buffer,
+                                              VkDeviceMemory *out_memory,
+                                              void **out_mapping) {
+
+    VkDeviceSize size = sizeof(UBOData);
+    PROPAGATE(create_buffer(size,
+                            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                            out_buffer,
+                            out_memory));
+
+    VK_ERR(vkMapMemory(logical_device, *out_memory, 0, size, 0, out_mapping));
+
+    return GFX_SUCCESS;
+}
+
+static inline void
+transition_swapchain_image_layout(VkImageLayout old_layout,
+                                  VkImageLayout new_layout,
+                                  VkAccessFlags2 src_access_mask,
+                                  VkAccessFlags2 dst_access_mask,
+                                  VkPipelineStageFlags2 src_stage_mask,
+                                  VkPipelineStageFlags2 dst_stage_mask) {
+
+    VkImageMemoryBarrier2 barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = src_stage_mask,
+        .srcAccessMask = src_access_mask,
+        .dstStageMask = dst_stage_mask,
+        .dstAccessMask = dst_access_mask,
+        .oldLayout = old_layout,
+        .newLayout = new_layout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = swapchain_images.images[image_index],
+        .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .baseMipLevel = 0,
+                             .levelCount = 1,
+                             .baseArrayLayer = 0,
+                             .layerCount = 1},
+    };
+    VkDependencyInfo dependency_info = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &barrier,
+    };
+
+    vkCmdPipelineBarrier2(drawing_command_buffers[frame_index],
+                          &dependency_info);
+}
+
+static inline void
+transition_image_layout(VkImage image,
+                        VkImageLayout old_layout,
+                        VkImageLayout new_layout,
+                        VkAccessFlags src_access_mask,
+                        VkAccessFlags dst_access_mask,
+                        VkPipelineStageFlags src_stage,
+                        VkPipelineStageFlags dst_stage,
+                        VkImageAspectFlags image_aspect_flags) {
+
+    VkCommandBuffer cmd_buf;
+    begin_single_time_commands(&cmd_buf);
+
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = old_layout,
+        .newLayout = new_layout,
+        .srcAccessMask = src_access_mask,
+        .dstAccessMask = dst_access_mask,
+        .image = image,
+        .subresourceRange = {image_aspect_flags, 0, 1, 0, 1},
+    };
+
+    vkCmdPipelineBarrier(
+        cmd_buf, src_stage, dst_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+    end_single_time_commands(cmd_buf);
+}
+
+static inline void copy_buffer_to_image(VkBuffer buffer,
+                                        VkImage image,
+                                        uint32_t width,
+                                        uint32_t height) {
+
+    VkCommandBuffer cmd_buf;
+    begin_single_time_commands(&cmd_buf);
+
+    VkBufferImageCopy region = {
+        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .imageExtent = {width, height, 1},
+    };
+    vkCmdCopyBufferToImage(cmd_buf,
+                           buffer,
+                           image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1,
+                           &region);
+
+    end_single_time_commands(cmd_buf);
+}
+
+static inline void destroy_depth_resources(void) {
+    vkDestroyImage(logical_device, depth_image, NULL);
+    vkFreeMemory(logical_device, depth_image_memory, NULL);
+    vkDestroyImageView(logical_device, depth_image_view, NULL);
+}
+
+static inline void destroy_swapchain(void) {
+
+    for (uint32_t i = 0; i < swapchain_images.count; i++) {
+        vkDestroyImageView(
+            logical_device, swapchain_images.image_views[i], NULL);
+    }
+
+    vkDestroySwapchainKHR(logical_device, swapchain, NULL);
+    swapchain = 0;
+
+    memset(swapchain_images.images, 0, sizeof swapchain_images.images);
+    memset(
+        swapchain_images.image_views, 0, sizeof swapchain_images.image_views);
+    swapchain_images.count = SWAPCHAIN_MAX_IMAGES;
+}
+
+static inline GfxResult recreate_swapchain(void) {
+
+    has_window_resized = 0;
+
+    VK_ERR(vkDeviceWaitIdle(logical_device));
+    destroy_swapchain();
+    PROPAGATE(create_swapchain());
+
+    destroy_depth_resources();
+    PROPAGATE(create_depth_resources());
+
+    return GFX_SUCCESS;
+}
+
+static inline GfxResult create_sync_objects(void) {
+
+    VkSemaphoreCreateInfo semaphore_create_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+
+    VkFenceCreateInfo fence_create_info = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+
+        VK_ERR(vkCreateSemaphore(logical_device,
+                                 &semaphore_create_info,
+                                 NULL,
+                                 present_done_semaphores + i));
+        VK_ERR(vkCreateSemaphore(logical_device,
+                                 &semaphore_create_info,
+                                 NULL,
+                                 rendering_done_semaphores + i));
+
+        VK_ERR(vkCreateFence(
+            logical_device, &fence_create_info, NULL, draw_fences + i));
+    }
+
+    return GFX_SUCCESS;
+}
+
+GfxResult gapi_init(GfxInitInfo *info) {
+
+    if (GapiObjectBuf_init(&objects) < 0)
+        return GFX_SYSTEM_ERROR;
+    if (GapiMeshBuf_init(&meshes) < 0)
+        return GFX_SYSTEM_ERROR;
+    if (GapiTextureBuf_init(&textures) < 0)
+        return GFX_SYSTEM_ERROR;
+
+    PROPAGATE(init_window(info->window.width,
+                          info->window.height,
+                          info->window.title,
+                          info->window.flags));
+
+    PROPAGATE(create_instance());
     VK_ERR(glfwCreateWindowSurface(instance, window, NULL, &surface));
-
-    pick_physical_device();
-
-    create_logical_device();
-
-    VkSurfaceFormatKHR surface_format;
-    create_swapchain(&surface_format);
-
-    create_drawing_command_buffers();
-
-    VkFormat depth_format;
-    create_depth_resources(&depth_format);
-
-    create_descriptor_set_layout();
-    create_descriptor_pool();
-
-    // create_uniform_buffers();
-    // create_descriptor_sets();
+    PROPAGATE(pick_physical_device());
+    PROPAGATE(create_logical_device());
+    PROPAGATE(create_swapchain());
+    PROPAGATE(create_drawing_command_buffers());
+    PROPAGATE(create_depth_resources());
+    PROPAGATE(create_descriptor_set_layout());
 
     ERR((pipelines = calloc(info->shader_count, sizeof(VkPipeline))) == NULL,
         "calloc()");
 
     for (uint32_t i = 0; i < info->shader_count; i++) {
-        create_graphics_pipeline(
-            surface_format, depth_format, info->shaders[i], pipelines + i);
+        PROPAGATE(create_graphics_pipeline(info->shaders[i], pipelines + i));
+    }
+
+    PROPAGATE(create_sync_objects());
+
+    return GFX_SUCCESS;
+}
+
+GfxResult gapi_mesh_upload(Mesh *mesh, GapiMeshHandle *out_mesh_handle) {
+
+    GapiMesh gpu_mesh = {.index_count = mesh->index_count};
+
+    PROPAGATE(upload_data(mesh->vertices,
+                          mesh->vertex_count * sizeof *mesh->vertices,
+                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                          &gpu_mesh.vertex_buffer,
+                          &gpu_mesh.vertex_memory));
+    PROPAGATE(upload_data(mesh->indices,
+                          mesh->index_count * sizeof *mesh->indices,
+                          VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                          &gpu_mesh.index_buffer,
+                          &gpu_mesh.index_memory));
+
+    GapiMeshHandle handle = meshes.count;
+    SYS_ERR(GapiMeshBuf_append(&meshes, &gpu_mesh));
+
+    *out_mesh_handle = handle;
+    return GFX_SUCCESS;
+}
+
+GfxResult gapi_texture_upload(uint32_t *pixels,
+                              uint32_t width,
+                              uint32_t height,
+                              TextureHandle *out_texture_handle) {
+
+    GapiTexture texture = {0};
+
+    VkDeviceSize image_size = width * height * sizeof *pixels;
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_buffer_memory;
+    create_buffer(image_size,
+                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                  VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                  &staging_buffer,
+                  &staging_buffer_memory);
+
+    // Fill staging buffer
+    void *mapped_data;
+    VK_ERR(vkMapMemory(
+        logical_device, staging_buffer_memory, 0, image_size, 0, &mapped_data));
+    memcpy(mapped_data, pixels, image_size);
+    vkUnmapMemory(logical_device, staging_buffer_memory);
+
+    // Create image
+
+    PROPAGATE(create_image(width,
+                           height,
+                           VK_FORMAT_R8G8B8A8_SRGB,
+                           VK_IMAGE_TILING_OPTIMAL,
+                           VK_IMAGE_USAGE_SAMPLED_BIT |
+                               VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                           &texture.image,
+                           &texture.image_memory));
+
+    transition_image_layout(texture.image,
+                            VK_IMAGE_LAYOUT_UNDEFINED,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            0,
+                            VK_ACCESS_TRANSFER_WRITE_BIT,
+                            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_IMAGE_ASPECT_COLOR_BIT);
+    copy_buffer_to_image(staging_buffer, texture.image, width, height);
+    transition_image_layout(texture.image,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            VK_ACCESS_TRANSFER_WRITE_BIT,
+                            VK_ACCESS_SHADER_READ_BIT,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT,
+                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                            VK_IMAGE_ASPECT_COLOR_BIT);
+
+    VK_ERR(vkQueueWaitIdle(queue));
+    destroy_buffer(staging_buffer, staging_buffer_memory);
+
+    // Create image view
+
+    VkImageViewCreateInfo image_view_create_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = texture.image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = VK_FORMAT_R8G8B8A8_SRGB,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    VK_ERR(vkCreateImageView(
+        logical_device, &image_view_create_info, NULL, &texture.image_view));
+
+    VkPhysicalDeviceProperties physical_device_properties;
+    vkGetPhysicalDeviceProperties(physical_device, &physical_device_properties);
+    int max_anisotropy = physical_device_properties.limits.maxSamplerAnisotropy;
+
+    VkSamplerCreateInfo sampler_create_info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_NEAREST,
+        .minFilter = VK_FILTER_NEAREST,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .anisotropyEnable = VK_TRUE,
+        .maxAnisotropy = max_anisotropy,
+        .compareEnable = VK_FALSE,
+        .compareOp = VK_COMPARE_OP_ALWAYS,
+        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+        .unnormalizedCoordinates = VK_FALSE,
+    };
+
+    VK_ERR(vkCreateSampler(
+        logical_device, &sampler_create_info, NULL, &texture.sampler));
+
+    GapiTextureHandle handle = textures.count;
+    SYS_ERR(GapiTextureBuf_append(&textures, &texture));
+
+    *out_texture_handle = handle;
+    return GFX_SUCCESS;
+}
+
+GfxResult gapi_object_create(GapiMeshHandle mesh_handle,
+                             GapiTextureHandle texture_handle,
+                             GapiObjectHandle *out_object_handle) {
+
+    GapiObject new_object = {
+        .mesh_handle = mesh_handle,
+        .model_matrix = GLM_MAT4_IDENTITY_INIT,
+    };
+    GapiObjectHandle handle = objects.count;
+    SYS_ERR(GapiObjectBuf_append(&objects, &new_object));
+
+    GapiObject *object = objects.data + handle;
+
+    PROPAGATE(create_descriptor_pool());
+
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        PROPAGATE(create_uniform_buffer(object->uniform_buffers + i,
+                                        object->uniform_buffer_memories + i,
+                                        object->uniform_buffer_mappings + i));
+    }
+
+    GapiTexture *texture = GapiTextureBuf_get(&textures, texture_handle);
+    if (texture == NULL)
+        return GFX_SYSTEM_ERROR;
+
+    PROPAGATE(create_descriptor_sets(MAX_FRAMES_IN_FLIGHT,
+                                     object->uniform_buffers,
+                                     texture,
+                                     object->descriptor_sets));
+
+    *out_object_handle = handle;
+    return GFX_SUCCESS;
+}
+
+void gapi_object_set_matrix(GapiObjectHandle object_handle,
+                            mat4 *model_matrix) {
+}
+
+VkResult gapi_get_vulkan_error(void) {
+    return vulkan_error;
+}
+
+GfxResult gapi_render_begin(void) {
+
+    VK_ERR(vkQueueWaitIdle(queue));
+
+    VkResult result =
+        vkAcquireNextImageKHR(logical_device,
+                              swapchain,
+                              UINT64_MAX,
+                              present_done_semaphores[frame_index],
+                              NULL,
+                              &image_index);
+
+    switch (result) {
+    case VK_SUCCESS:
+        break;
+
+    case VK_SUBOPTIMAL_KHR:
+    case VK_ERROR_OUT_OF_DATE_KHR:
+        PROPAGATE(recreate_swapchain());
+        PROPAGATE(gapi_render_begin());
+        return GFX_SUCCESS;
+
+    default:
+        VK_ERR(result);
+        break;
+    }
+
+    VkCommandBuffer cmd_buf = drawing_command_buffers[frame_index];
+
+    // Begin command buffer
+    VkCommandBufferBeginInfo begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    VK_ERR(vkBeginCommandBuffer(cmd_buf, &begin_info));
+
+    transition_image_layout(depth_image,
+                            VK_IMAGE_LAYOUT_UNDEFINED,
+                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                            VK_IMAGE_ASPECT_DEPTH_BIT);
+
+    transition_swapchain_image_layout(
+        VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        0,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
+
+    // Black
+    VkClearValue clear_color = {.color = {.float32 = {0, 0, 0, 1}}};
+    VkClearValue clear_depth = {.depthStencil = {1, 0}};
+
+    VkRenderingAttachmentInfo color_att_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = swapchain_images.image_views[image_index],
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .clearValue = clear_color,
+    };
+    VkRenderingAttachmentInfo depth_att_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = depth_image_view,
+        .imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .clearValue = clear_depth,
+    };
+    VkRenderingInfo rendering_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea = {.offset = {0, 0}, .extent = swap_extent},
+        .layerCount = 1,
+        .colorAttachmentCount = 1,
+        .pColorAttachments = &color_att_info,
+        .pDepthAttachment = &depth_att_info,
+    };
+
+    vkCmdBeginRendering(cmd_buf, &rendering_info);
+
+    //  TODO: Choose pipeline / shader index
+    vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines[0]);
+
+    VkViewport viewport = {0, 0, swap_extent.width, swap_extent.height, 0, 1};
+    vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
+    VkRect2D scissor = {.extent = swap_extent};
+    vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
+
+    return GFX_SUCCESS;
+}
+
+GfxResult gapi_render_end(void) {
+
+    VkCommandBuffer cmd_buf = drawing_command_buffers[frame_index];
+
+    vkCmdEndRendering(cmd_buf);
+    transition_swapchain_image_layout(
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        0,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
+
+    vkEndCommandBuffer(cmd_buf);
+
+    VK_ERR(vkResetFences(logical_device, 1, &draw_fences[frame_index]));
+
+    VkPipelineStageFlags wait_destination_stage_mask =
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = present_done_semaphores + frame_index,
+        .pWaitDstStageMask = &wait_destination_stage_mask,
+        .commandBufferCount = 1,
+        .pCommandBuffers = drawing_command_buffers + frame_index,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = rendering_done_semaphores + frame_index,
+    };
+    VK_ERR(vkQueueSubmit(queue, 1, &submit_info, draw_fences[frame_index]));
+    VK_ERR(vkWaitForFences(
+        logical_device, 1, draw_fences + frame_index, VK_TRUE, UINT64_MAX));
+
+    VkPresentInfoKHR present_info = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = rendering_done_semaphores + frame_index,
+        .swapchainCount = 1,
+        .pSwapchains = &swapchain,
+        .pImageIndices = &image_index,
+    };
+
+    frame_index = (frame_index + 1) % MAX_FRAMES_IN_FLIGHT;
+
+    VkResult result = vkQueuePresentKHR(queue, &present_info);
+
+    switch (result) {
+    case VK_SUCCESS:
+        break;
+
+    case VK_SUBOPTIMAL_KHR:
+    case VK_ERROR_OUT_OF_DATE_KHR:
+        recreate_swapchain();
+        break;
+
+    default:
+        VK_ERR(result);
+    }
+
+    if (has_window_resized)
+        recreate_swapchain();
+
+    return GFX_SUCCESS;
+}
+
+static inline void update_uniform_buffer(GapiObject *object) {
+
+    UBOData ubo_data = {
+        .view = GLM_MAT4_IDENTITY_INIT,
+        .projection = GLM_MAT4_IDENTITY_INIT,
+    };
+    memcpy(ubo_data.model, object->model_matrix, sizeof(mat4));
+
+    vec3 up = {0, 1, 0};
+    vec3 right = {1, 0, 0};
+    vec3 eye = {2, 2, 2};
+    vec3 target = {0, 0, 0};
+    float aspect_ratio = (float)swap_extent.width / swap_extent.height;
+
+    glm_lookat(eye, target, up, ubo_data.view);
+    glm_perspective(M_PI * 0.25, aspect_ratio, 0.1, 10, ubo_data.projection);
+    ubo_data.projection[1][1] *= -1;
+
+    memcpy(object->uniform_buffer_mappings[frame_index],
+           &ubo_data,
+           sizeof ubo_data);
+}
+
+void gapi_object_draw(GapiObjectHandle object_handle) {
+
+    VkCommandBuffer cmd_buf = drawing_command_buffers[frame_index];
+    GapiObject *object = objects.data + object_handle;
+    GapiMesh *mesh = meshes.data + object->mesh_handle;
+
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(cmd_buf, 0, 1, &mesh->vertex_buffer, &offset);
+    vkCmdBindIndexBuffer(cmd_buf, mesh->index_buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindDescriptorSets(cmd_buf,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            pipeline_layout,
+                            0,
+                            1,
+                            object->descriptor_sets + frame_index,
+                            0,
+                            NULL);
+
+    vkCmdDrawIndexed(cmd_buf, mesh->index_count, 1, 0, 0, 0);
+
+    // Update uniform buffer for object
+    update_uniform_buffer(object);
+}
+
+int gapi_window_should_close(void) {
+    glfwPollEvents();
+    return glfwWindowShouldClose(window);
+}
+
+const char *gapi_strerror(GfxResult result) {
+    switch (result) {
+    case GFX_SUCCESS:
+        return "Success";
+    case GFX_ERROR_GENERIC:
+        return "Unknown error";
+    case GFX_SYSTEM_ERROR:
+        return "A system error occurred, check errno";
+    case GFX_VULKAN_ERROR:
+        return "A vulkan error occurred, check gapi_get_vulkan_error()";
+    case GFX_GLFW_ERROR:
+        return "A glfw error occurred";
+    case GFX_NO_DEVICE_FOUND:
+        return "No suitable physical device found";
+    case GFX_VULKAN_FEATURE_UNSUPPORTED:
+        return "A required Vulkan feature is not supported";
     }
 }

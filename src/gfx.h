@@ -6,6 +6,12 @@
 
 typedef enum {
     GFX_SUCCESS = 0,
+    GFX_ERROR_GENERIC,
+    GFX_SYSTEM_ERROR,
+    GFX_VULKAN_ERROR,
+    GFX_GLFW_ERROR,
+    GFX_NO_DEVICE_FOUND,
+    GFX_VULKAN_FEATURE_UNSUPPORTED,
 } GfxResult;
 
 typedef uint32_t MeshHandle;

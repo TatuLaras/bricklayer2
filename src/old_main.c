@@ -757,14 +757,11 @@ static inline void upload_data(void *data,
                   &staging_buffer,
                   &staging_buffer_memory);
 
-    VkDeviceMemory buffer_memory;
     create_buffer(size,
                   VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                   out_buffer,
-                  &buffer_memory);
-
-    *out_memory = buffer_memory;
+                  out_memory);
 
     // Fill staging buffer
     void *mapped_data;
@@ -1262,18 +1259,18 @@ static inline void record_command_buffer(uint32_t image_index) {
     };
 
     vkCmdBeginRendering(cmd_buf, &rendering_info);
-    vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(cmd_buf, 0, 1, &vertex_buffer, &offset);
-    vkCmdBindIndexBuffer(cmd_buf, index_buffer, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
     VkViewport viewport = {0, 0, swap_extent.width, swap_extent.height, 0, 1};
     vkCmdSetViewport(cmd_buf, 0, 1, &viewport);
-
     VkRect2D scissor = {.extent = swap_extent};
     vkCmdSetScissor(cmd_buf, 0, 1, &scissor);
 
+    //
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(cmd_buf, 0, 1, &vertex_buffer, &offset);
+    vkCmdBindIndexBuffer(cmd_buf, index_buffer, 0, VK_INDEX_TYPE_UINT32);
     vkCmdBindDescriptorSets(cmd_buf,
                             VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipeline_layout,
@@ -1282,8 +1279,10 @@ static inline void record_command_buffer(uint32_t image_index) {
                             descriptor_sets + frame_index,
                             0,
                             NULL);
+
     vkCmdDrawIndexed(cmd_buf, mesh.index_count, 1, 0, 0, 0);
 
+    //
     vkCmdEndRendering(cmd_buf);
     transition_swapchain_image_layout(
         image_index,
@@ -1417,8 +1416,8 @@ static inline void draw_frame(void) {
         VK_ERR_MSG(result, "vkQueuePresentKHR()");
     }
 
-    // if (framebuffer_resized)
-    //     recreate_swapchain();
+    if (framebuffer_resized)
+        recreate_swapchain();
 }
 
 static inline void cleanup(void) {

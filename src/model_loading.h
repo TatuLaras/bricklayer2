@@ -17,6 +17,7 @@
 #include "gfx.h"
 #include "log.h"
 
+#define STR(x) #x
 #define MLD_ERR_MSG(result, message)                                           \
     {                                                                          \
         MldResult __res = result;                                              \
