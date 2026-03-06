@@ -70,7 +70,14 @@ load_obj(size_t file_size, char *file_data, MeshData *out_mesh) {
                 .pos = {.x = atof(symbol[1]),
                         .y = atof(symbol[2]),
                         .z = atof(symbol[3])},
+                .color = {.r = 1.0, .g = 1.0, .b = 1.0},
             };
+
+            if (param_count == 7)
+                vertex.color = (vec3s){.r = atof(symbol[4]),
+                                       .g = atof(symbol[5]),
+                                       .b = atof(symbol[6])};
+
             SYS_ERR(VertexBuf_append(&vertices, &vertex));
             uint32_t max = UINT32_MAX;
             SYS_ERR(IntBuf_append(&tmp_vertex_uv_indices, &max));

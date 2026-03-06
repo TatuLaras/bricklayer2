@@ -6,6 +6,8 @@
  *
  * I've made allocating the internal memory explicit by calling mld_init()
  * before any other function as well as calling mld_free() at the end.
+ *
+ * Currently only triangulated .obj files are supported.
  */
 #ifndef _MODEL_LOADING
 #define _MODEL_LOADING
@@ -14,8 +16,8 @@
 #include <stdlib.h>
 
 #include "cglm/types-struct.h"
+#include "gapi_types.h"
 #include "log.h"
-#include "types.h"
 
 #define STR(x) #x
 #define MLD_ERR_MSG(result, message)                                           \
