@@ -3,9 +3,14 @@
 
 #include "cglm/cglm.h"
 #include "cglm/types-struct.h"
-#include <vulkan/vulkan_core.h>
 
-#include "model_loading.h"
+#include <vulkan/vk_enum_string_helper.h>
+#include <vulkan/vulkan.h>
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+
+#include "gapi_types.h"
+#include "types.h"
 
 #define GAPI_ERR_MSG(result, message)                                          \
     {                                                                          \
@@ -52,48 +57,7 @@
         }                                                                      \
     }
 
-typedef enum {
-    GAPI_SUCCESS = 0,
-    GAPI_ERROR_GENERIC,
-    GAPI_SYSTEM_ERROR,
-    GAPI_VULKAN_ERROR,
-    GAPI_GLFW_ERROR,
-    GAPI_NO_DEVICE_FOUND,
-    GAPI_VULKAN_FEATURE_UNSUPPORTED,
-} GapiResult;
-
-typedef enum {
-    GAPI_WINDOW_RESIZEABLE = 1,
-} GapiWindowFlags;
-
-typedef struct {
-    uint32_t width;
-    uint32_t height;
-    const char *title;
-    GapiWindowFlags flags;
-} GapiWindowInitInfo;
-
-typedef struct {
-    const char *code;
-    uint32_t size;
-} GapiShader;
-
-typedef struct {
-    GapiWindowInitInfo window;
-    uint32_t shader_count;
-    GapiShader *shaders;
-} GapiInitInfo;
-
-typedef struct {
-    vec3 pos;
-    vec3 target;
-    vec3 up;
-    float fov_degrees;
-} GapiCamera;
-
-typedef uint32_t GapiMeshHandle;
-typedef uint32_t GapiObjectHandle;
-typedef uint32_t GapiTextureHandle;
+#define SWAPCHAIN_MAX_IMAGES 16
 
 extern VkResult gapi_vulkan_error;
 
