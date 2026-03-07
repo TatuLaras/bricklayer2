@@ -1,6 +1,3 @@
 [submodule "external/cglm"]
 	path = external/cglm
 	url = https://github.com/recp/cglm.git
-[submodule "external/gapi"]
-	path = external/gapi
-	url = https://github.com/TatuLaras/gapi
