@@ -1,4 +1,3 @@
-#include "cglm/cglm.h"
 #include "gapi.h"
 #include "gapi_types.h"
 #include "grid.h"
@@ -6,7 +5,6 @@
 #include "orbital_controls.h"
 #include "stb_image.h"
 #include "user_input.h"
-#include "utility_macros.h"
 
 #include "user_input.h"
 #include <stdlib.h>
@@ -26,7 +24,7 @@ int main(void) {
     GapiInitInfo init_info = {
         .window = {.width = WINDOW_WIDTH,
                    .height = WINDOW_HEIGHT,
-                   .title = "My cool window",
+                   .title = "bricklayer2",
                    .flags = GAPI_WINDOW_RESIZEABLE},
         .shader_count = 1,
     };
@@ -50,7 +48,7 @@ int main(void) {
 
     MLD_ERR(mld_init());
 
-    MeshData mesh;
+    MldMesh mesh;
     int width, height;
     uint8_t *pixels;
     GapiMeshHandle barrel_mesh;
@@ -58,7 +56,8 @@ int main(void) {
     GapiMeshHandle cube_mesh;
     GapiTextureHandle cube_texture;
 
-    MLD_ERR(mld_load_file("/home/tatu/_repos/ebb/assets/barrel.obj", &mesh));
+    MLD_ERR(mld_load_file(
+        "/home/tatu/_repos/ebb/assets/barrel.obj", &mesh, MLD_STORAGE_FAST));
     gapi_mesh_upload(&mesh, &barrel_mesh);
     pixels = stbi_load("/home/tatu/_repos/ebb/assets/barrel.png",
                        &width,
@@ -71,8 +70,10 @@ int main(void) {
     }
     GAPI_ERR(gapi_texture_upload(
         (uint32_t *)pixels, width, height, &barrel_texture));
+    stbi_image_free(pixels);
 
-    MLD_ERR(mld_load_file("/home/tatu/test_obj/cube.obj", &mesh));
+    MLD_ERR(
+        mld_load_file("/home/tatu/test_obj/cube.obj", &mesh, MLD_STORAGE_FAST));
     gapi_mesh_upload(&mesh, &cube_mesh);
     pixels = stbi_load(
         "/home/tatu/test_obj/tex.png", &width, &height, NULL, STBI_rgb_alpha);
@@ -82,6 +83,7 @@ int main(void) {
     }
     GAPI_ERR(
         gapi_texture_upload((uint32_t *)pixels, width, height, &cube_texture));
+    stbi_image_free(pixels);
 
     GapiObjectHandle barrels[WIDTH * WIDTH];
     GapiObjectHandle cubes[WIDTH * WIDTH];
@@ -92,7 +94,6 @@ int main(void) {
     }
 
     vec3 up = {0, 1, 0};
-    vec3 right = {1, 0, 0};
     GapiCamera camera = {
         .pos = {0, 5, 5},
         .target = {0, 0, 0},
@@ -162,13 +163,14 @@ int main(void) {
                 gapi_object_draw(cubes[i], pipeline, &matrix, GAPI_COLOR_WHITE);
             }
         }
-        gapi_rect_draw(rect,
-                       (Rect2D){.width = window_width / 3,
-                                .height = window_height / 2,
-                                .x = 40,
-                                .y = 40},
-                       GAPI_COLOR_WHITE,
-                       pipeline);
+
+        // gapi_rect_draw(rect,
+        //                (Rect2D){.width = window_width / 3,
+        //                         .height = window_height / 2,
+        //                         .x = 40,
+        //                         .y = 40},
+        //                GAPI_COLOR_WHITE,
+        //                pipeline);
 
         mat4 grid_matrix;
         glm_mat4_identity(grid_matrix);
@@ -183,5 +185,6 @@ int main(void) {
     }
 
     mld_free();
+    gapi_free();
     exit(EXIT_SUCCESS);
 }

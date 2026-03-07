@@ -30,11 +30,33 @@ Vec2Buf tmp_uvs = {0};
     if ((result) < 0)                                                          \
         return MLD_SYSTEM_ERROR;
 
-static inline MldResult
-load_obj(size_t file_size, char *file_data, MeshData *out_mesh) {
+static inline MldResult load_obj(size_t file_size,
+                                 char *file_data,
+                                 MldMesh *out_mesh,
+                                 MldStorageType storage) {
 
-    size_t vertices_start = vertices.count;
-    size_t indices_start = indices.count;
+    VertexBuf tmp_vertex_buf = {0};
+    IntBuf tmp_index_buf = {0};
+    VertexBuf *vertex_buf = NULL;
+    IntBuf *index_buf = NULL;
+
+    switch (storage) {
+
+    case MLD_STORAGE_FAST: {
+        vertex_buf = &vertices;
+        index_buf = &indices;
+    } break;
+
+    case MLD_STORAGE_MALLOC: {
+        VertexBuf_init(&tmp_vertex_buf);
+        IntBuf_init(&tmp_index_buf);
+        vertex_buf = &tmp_vertex_buf;
+        index_buf = &tmp_index_buf;
+    } break;
+    }
+
+    size_t vertices_start = vertex_buf->count;
+    size_t indices_start = index_buf->count;
     tmp_vertex_uv_indices.count = 0;
     tmp_normals.count = 0;
     tmp_uvs.count = 0;
@@ -78,7 +100,7 @@ load_obj(size_t file_size, char *file_data, MeshData *out_mesh) {
                                        .g = atof(symbol[5]),
                                        .b = atof(symbol[6])};
 
-            SYS_ERR(VertexBuf_append(&vertices, &vertex));
+            SYS_ERR(VertexBuf_append(vertex_buf, &vertex));
             uint32_t max = UINT32_MAX;
             SYS_ERR(IntBuf_append(&tmp_vertex_uv_indices, &max));
         }
@@ -146,7 +168,7 @@ load_obj(size_t file_size, char *file_data, MeshData *out_mesh) {
                 uint32_t vert_index = atoi(index_str) - 1;
 
                 Vertex *vertex =
-                    VertexBuf_get(&vertices, vertices_start + vert_index);
+                    VertexBuf_get(vertex_buf, vertices_start + vert_index);
                 if (vertex == NULL)
                     return MLD_INVALID_FILE_FORMAT;
 
@@ -169,13 +191,13 @@ load_obj(size_t file_size, char *file_data, MeshData *out_mesh) {
                 // Different uv coords -> duplicate vertex
                 if (*old_uv_index != uv_index) {
 
-                    vert_index = vertices.count - vertices_start;
+                    vert_index = vertex_buf->count - vertices_start;
                     Vertex new_vertex = *vertex;
-                    SYS_ERR(VertexBuf_append(&vertices, &new_vertex));
+                    SYS_ERR(VertexBuf_append(vertex_buf, &new_vertex));
                     uint32_t max = UINT32_MAX;
                     SYS_ERR(IntBuf_append(&tmp_vertex_uv_indices, &max));
 
-                    vertex = VertexBuf_get(&vertices, vertices.count - 1);
+                    vertex = VertexBuf_get(vertex_buf, vertex_buf->count - 1);
                     if (vertex == NULL)
                         return MLD_SYSTEM_ERROR;
                     old_uv_index =
@@ -190,44 +212,24 @@ load_obj(size_t file_size, char *file_data, MeshData *out_mesh) {
 
                 *old_uv_index = uv_index;
 
-                SYS_ERR(IntBuf_append(&indices, &vert_index));
+                SYS_ERR(IntBuf_append(index_buf, &vert_index));
             }
         }
 
         param_count = 0;
     }
 
-    // for (uint32_t i = 0; i < vertices.count; i++) {
-    //     INFO("vertex (%f, %f, %f), uv: (%f, %f), normal: (%f, %f, %f)",
-    //          vertices.data[i].pos.x,
-    //          vertices.data[i].pos.y,
-    //          vertices.data[i].pos.z,
-    //          vertices.data[i].uv.u,
-    //          vertices.data[i].uv.v,
-    //          vertices.data[i].normal.x,
-    //          vertices.data[i].normal.y,
-    //          vertices.data[i].normal.z);
-    // }
-    //
-    // char *tabs[] = {
-    //     "",
-    //     "\t",
-    //     "\t\t",
-    // };
-    // for (uint32_t i = 0; i < indices.count; i++) {
-    //     INFO("index \t%s%u", tabs[i % 3], indices.data[i]);
-    // }
-
-    *out_mesh = (MeshData){
-        .vertex_count = vertices.count - vertices_start,
-        .index_count = indices.count - indices_start,
-        .vertices = vertices.data + vertices_start,
-        .indices = indices.data + indices_start,
+    *out_mesh = (MldMesh){
+        .vertex_count = vertex_buf->count - vertices_start,
+        .index_count = index_buf->count - indices_start,
+        .vertices = vertex_buf->data + vertices_start,
+        .indices = index_buf->data + indices_start,
     };
     return MLD_SUCCESS;
 }
 
-MldResult mld_load_file(const char *filepath, MeshData *out_mesh) {
+MldResult
+mld_load_file(const char *filepath, MldMesh *out_mesh, MldStorageType storage) {
 
     char *extension = strrchr(filepath, '.');
 
@@ -271,7 +273,7 @@ MldResult mld_load_file(const char *filepath, MeshData *out_mesh) {
     close(fd);
 
     if (!strcmp(extension, ".obj"))
-        result = load_obj(file_size, file_buf, out_mesh);
+        result = load_obj(file_size, file_buf, out_mesh, storage);
 
     free(file_buf);
     return result;
@@ -311,5 +313,9 @@ const char *mld_strerror(MldResult result) {
         return "Mesh contains non-triangulated faces";
     case MLD_SYSTEM_ERROR:
         return strerror(errno);
+    case MLD_CANNOT_FREE_FAST_STORAGE_MESH:
+        return "Cannot free a mesh with storage type MLD_STORAGE_FAST, use "
+               "MLD_STORAGE_MALLOC instead";
+        break;
     }
 }

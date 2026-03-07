@@ -1,8 +1,7 @@
 /*
  * A module to handle loading of model files.
  * The idea is that this module will also be the module to own all
- * the vertex data on the CPU. Aka. some graphics API interface will get the
- * data from this module to send to the GPU.
+ * the vertex data on the CPU.
  *
  * I've made allocating the internal memory explicit by calling mld_init()
  * before any other function as well as calling mld_free() at the end.
@@ -36,7 +35,36 @@ typedef enum {
     MLD_UNSUPPORTED_FILE_TYPE,
     MLD_SYSTEM_ERROR,
     MLD_NON_TRIANGLE_FACE,
+    MLD_CANNOT_FREE_FAST_STORAGE_MESH,
 } MldResult;
+
+/*
+ * There's two types of storage types for mesh vertex and index data.
+ *
+ * Either you have all the vertex and index data in one big buffer which is more
+ * performant. The downside is that you cannot free an individual mesh, so for
+ * something like hot reloading the mesh data just keeps piling up. This option
+ * (MLD_STORAGE_FAST) is ideally for the shippable release build of the game
+ * where scene models are usually not repeatedly reloaded.
+ *
+ * The second option is doing individual mallocs for each mesh. This is more
+ * suitable for the hot-reloading scenario and during development, when
+ * performance is not a huge concern. These types of meshes are not freed when
+ * mld_free() is called, so you have to free the malloced index and vertex data
+ * yourself.
+ */
+typedef enum {
+    MLD_STORAGE_FAST = 0,
+    MLD_STORAGE_MALLOC,
+} MldStorageType;
+
+typedef struct {
+    uint32_t vertex_count;
+    uint32_t index_count;
+    Vertex *vertices;
+    uint32_t *indices;
+    MldStorageType storage;
+} MldMesh;
 
 // Allocates memory for vertex data.
 MldResult mld_init(void);
@@ -51,7 +79,8 @@ void mld_free(void);
 // Returns the error code.
 //
 // Supported file formats: .obj
-MldResult mld_load_file(const char *filepath, MeshData *out_mesh);
+MldResult
+mld_load_file(const char *filepath, MldMesh *out_mesh, MldStorageType storage);
 const char *mld_strerror(MldResult result);
 
 #endif
