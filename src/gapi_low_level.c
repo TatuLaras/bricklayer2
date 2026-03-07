@@ -1263,14 +1263,22 @@ GapiResult gll_texture_create(VkDevice device,
 
 void gll_texture_destroy(VkDevice device, GapiTexture *texture) {
 
-    if (texture->sampler != NULL)
+    if (texture->sampler != NULL) {
         vkDestroySampler(device, texture->sampler, NULL);
-    if (texture->image_view != NULL)
+        texture->sampler = NULL;
+    }
+    if (texture->image_view != NULL) {
         vkDestroyImageView(device, texture->image_view, NULL);
-    if (texture->image != NULL)
+        texture->image_view = NULL;
+    }
+    if (texture->image != NULL) {
         vkDestroyImage(device, texture->image, NULL);
-    if (texture->image_memory != NULL)
+        texture->image = NULL;
+    }
+    if (texture->image_memory != NULL) {
         vkFreeMemory(device, texture->image_memory, NULL);
+        texture->image_memory = NULL;
+    }
 }
 
 void gll_mesh_destroy(VkDevice device, GapiMesh *mesh) {

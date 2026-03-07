@@ -11,14 +11,11 @@
 #ifndef _MODEL_LOADING
 #define _MODEL_LOADING
 
+#include "log.h"
+#include "types.h"
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "cglm/types-struct.h"
-#include "gapi_types.h"
-#include "log.h"
-
-#define STR(x) #x
 #define MLD_ERR_MSG(result, message)                                           \
     {                                                                          \
         MldResult __res = result;                                              \
@@ -59,10 +56,7 @@ typedef enum {
 } MldStorageType;
 
 typedef struct {
-    uint32_t vertex_count;
-    uint32_t index_count;
-    Vertex *vertices;
-    uint32_t *indices;
+    Mesh mesh;
     MldStorageType storage;
 } MldMesh;
 

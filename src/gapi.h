@@ -1,19 +1,13 @@
-//  FIXME: Nothing is deinitialized
-//  TODO: A mesh / texture data update function
 #ifndef _GRAPHICS_API
 #define _GRAPHICS_API
 
-#include "cglm/cglm.h"
-#include "cglm/types-struct.h"
-#include "model_loading.h"
-
+#include "types.h"
 #include <vulkan/vk_enum_string_helper.h>
 #include <vulkan/vulkan.h>
 #define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-
 #include "gapi_types.h"
 #include "log.h"
+#include <GLFW/glfw3.h>
 
 #define GAPI_ERR_MSG(result, message)                                          \
     {                                                                          \
@@ -76,22 +70,17 @@ void gapi_free(void);
 
 // Upload mesh data to use for drawing. Opaque handle will be written to
 // `out_mesh_handle`.
-GapiResult gapi_mesh_upload(MldMesh *mesh, GapiMeshHandle *out_mesh_handle);
+GapiResult gapi_mesh_upload(Mesh *mesh, GapiMeshHandle *out_mesh_handle);
 // Upload texture data to use for drawing. Opaque handle will be written to
 // `out_texture_handle`.
-GapiResult gapi_texture_upload(uint32_t *pixels,
-                               uint32_t width,
-                               uint32_t height,
+GapiResult gapi_texture_upload(Image *image,
                                GapiTextureHandle *out_texture_handle);
 
 // Update existing mesh object `mesh_handle` to have mesh data in `mesh`.
-GapiResult gapi_mesh_update(GapiMeshHandle mesh_handle, MldMesh *mesh);
+GapiResult gapi_mesh_update(GapiMeshHandle mesh_handle, Mesh *mesh);
 // Update existing texture object `texture_handle` to have texture data in
 // `pixels`.
-GapiResult gapi_texture_update(GapiTextureHandle texture_handle,
-                               uint32_t *pixels,
-                               uint32_t width,
-                               uint32_t height);
+GapiResult gapi_texture_update(GapiTextureHandle texture_handle, Image *image);
 
 // Create a drawable 3D object from mesh and texture handles obtained from
 // gapi_mesh_upload() and gapi_texture_upload() respectively. Opaque handle will

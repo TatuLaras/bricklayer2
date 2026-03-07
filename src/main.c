@@ -1,26 +1,80 @@
+#include "cglm/cglm.h"
+#include "firewatch.h"
 #include "gapi.h"
 #include "gapi_types.h"
 #include "grid.h"
 #include "model_loading.h"
 #include "orbital_controls.h"
-#include "stb_image.h"
+#include "texture_loading.h"
 #include "user_input.h"
-
-#include "user_input.h"
+#include <math.h>
 #include <stdlib.h>
 #include <time.h>
 
 #define WINDOW_WIDTH 600
 #define WINDOW_HEIGHT 400
 
-#define WIDTH 12
+#define GRID_SIZE 20
 
 const char shader_code[] = {
 #embed "../build/shaders/shader.spv"
 };
 
-int main(void) {
+const GapiCamera initial_camera = {
+    .pos = {0.01, 2, 3},
+    .target = {0, 0, 0},
+    .up = {0, 1, 0},
+    .fov_degrees = 45.0,
+    .near_plane = 0.001,
+    .far_plane = 10000.0,
+};
 
+void texture_callback(const char *filepath, uint64_t cookie) {
+
+    Image image;
+    TLD_ERR(tld_load_file(filepath, &image));
+    GAPI_ERR(gapi_texture_update((GapiTextureHandle)cookie, &image));
+    tld_free(&image);
+}
+
+void mesh_callback(const char *filepath, uint64_t cookie) {
+
+    MldMesh mesh;
+    MldResult mld_res = mld_load_file(filepath, &mesh, MLD_STORAGE_MALLOC);
+    if (mld_res != MLD_SUCCESS) {
+        ERROR("Could not load mesh '%s': %s", filepath, mld_strerror(mld_res));
+        return;
+    }
+    GAPI_ERR(gapi_mesh_update((GapiMeshHandle)cookie, &mesh.mesh));
+    free(mesh.mesh.vertices);
+    free(mesh.mesh.indices);
+}
+
+void usage_exit(char *program_name) {
+
+    ERROR("usage: %s MODEL_FILE TEXTURE_FILE ...", program_name);
+    exit(EXIT_FAILURE);
+}
+
+int main(int argc, char **argv) {
+
+    if (argc < 2 || argc % 2 != 1)
+        usage_exit(*argv);
+
+    uint32_t model_count = (argc - 1) / 2;
+    uint32_t model_i = 0;
+    uint32_t texture_i = 0;
+    char *models[model_count];
+    char *textures[model_count];
+
+    for (int i = 1; i < argc; i++) {
+        if (i % 2 == 1)
+            models[model_i++] = argv[i];
+        else
+            textures[texture_i++] = argv[i];
+    }
+
+    GLFWwindow *window;
     GapiInitInfo init_info = {
         .window = {.width = WINDOW_WIDTH,
                    .height = WINDOW_HEIGHT,
@@ -28,8 +82,6 @@ int main(void) {
                    .flags = GAPI_WINDOW_RESIZEABLE},
         .shader_count = 1,
     };
-
-    GLFWwindow *window;
     GAPI_ERR(gapi_init(&init_info, &window));
     uin_init(window);
 
@@ -44,73 +96,49 @@ int main(void) {
     GapiPipelineHandle grid_pipeline;
     GapiObjectHandle grid_object;
     GAPI_ERR(grid_pipeline_create(&grid_pipeline));
-    GAPI_ERR(grid_object_create(100, 1.0, &grid_object));
+    GAPI_ERR(grid_object_create(GRID_SIZE, 1.0, &grid_object));
 
     MLD_ERR(mld_init());
 
-    MldMesh mesh;
-    int width, height;
-    uint8_t *pixels;
-    GapiMeshHandle barrel_mesh;
-    GapiTextureHandle barrel_texture;
-    GapiMeshHandle cube_mesh;
-    GapiTextureHandle cube_texture;
+    Vertex vertex = {0};
+    uint32_t index = 0;
+    Mesh empty_mesh = {
+        .vertex_count = 1,
+        .index_count = 1,
+        .vertices = &vertex,
+        .indices = &index,
+    };
 
-    MLD_ERR(mld_load_file(
-        "/home/tatu/_repos/ebb/assets/barrel.obj", &mesh, MLD_STORAGE_FAST));
-    gapi_mesh_upload(&mesh, &barrel_mesh);
-    pixels = stbi_load("/home/tatu/_repos/ebb/assets/barrel.png",
-                       &width,
-                       &height,
-                       NULL,
-                       STBI_rgb_alpha);
-    if (pixels == NULL) {
-        ERROR("failed to load image");
-        exit(EXIT_FAILURE);
-    }
-    GAPI_ERR(gapi_texture_upload(
-        (uint32_t *)pixels, width, height, &barrel_texture));
-    stbi_image_free(pixels);
+    uint32_t zero = 0;
+    Image empty = {
+        .pixels = &zero,
+        .width = 1,
+        .height = 1,
+    };
 
-    MLD_ERR(
-        mld_load_file("/home/tatu/test_obj/cube.obj", &mesh, MLD_STORAGE_FAST));
-    gapi_mesh_upload(&mesh, &cube_mesh);
-    pixels = stbi_load(
-        "/home/tatu/test_obj/tex.png", &width, &height, NULL, STBI_rgb_alpha);
-    if (pixels == NULL) {
-        ERROR("failed to load image");
-        exit(EXIT_FAILURE);
-    }
-    GAPI_ERR(
-        gapi_texture_upload((uint32_t *)pixels, width, height, &cube_texture));
-    stbi_image_free(pixels);
+    GapiObjectHandle objects[model_count];
 
-    GapiObjectHandle barrels[WIDTH * WIDTH];
-    GapiObjectHandle cubes[WIDTH * WIDTH];
+    for (uint32_t i = 0; i < model_count; i++) {
 
-    for (uint32_t i = 0; i < WIDTH * WIDTH; i++) {
-        GAPI_ERR(gapi_object_create(barrel_mesh, barrel_texture, barrels + i));
-        GAPI_ERR(gapi_object_create(cube_mesh, 0, cubes + i));
+        GapiMeshHandle mesh_handle;
+        GAPI_ERR(gapi_mesh_upload(&empty_mesh, &mesh_handle));
+        firewatch_new_file(models[i], mesh_handle, mesh_callback, 0);
+
+        GapiTextureHandle texture_handle;
+        GAPI_ERR(gapi_texture_upload(&empty, &texture_handle));
+        firewatch_new_file(textures[i], texture_handle, texture_callback, 0);
+
+        GAPI_ERR(gapi_object_create(mesh_handle, texture_handle, objects + i));
     }
 
     vec3 up = {0, 1, 0};
-    GapiCamera camera = {
-        .pos = {0, 5, 5},
-        .target = {0, 0, 0},
-        .up = {0, 1, 0},
-        .fov_degrees = 45.0,
-        .near_plane = 0.001,
-        .far_plane = 10000.0,
-    };
-
-    // TODO: shouldnt have to create the rect
-    GapiObjectHandle rect;
-    GAPI_ERR(gapi_rect_create(barrel_texture, &rect));
+    GapiCamera camera = initial_camera;
 
     double mouse_x, mouse_y;
-    double delta_time;
 
-    while (!gapi_window_should_close(&delta_time)) {
+    while (!gapi_window_should_close(NULL)) {
+
+        firewatch_check();
 
         uin_get_mouse_delta(&mouse_x, &mouse_y);
 
@@ -126,55 +154,28 @@ int main(void) {
             uin_set_cursor(UIN_CURSOR_NORMAL);
         if (uin_is_mouse_button_pressed(UIN_MOUSE_BUTTON_MIDDLE))
             uin_set_cursor(UIN_CURSOR_DISABLED);
-
         float scroll_amount = uin_get_scroll();
-
         if (scroll_amount != 0.0) {
             orbital_camera_update_zoom(&camera, scroll_amount);
         }
 
-        uint32_t window_width, window_height;
-        gapi_get_window_size(&window_width, &window_height);
-
-        struct timespec current_time = {0};
-        ERR(clock_gettime(CLOCK_MONOTONIC, &current_time) < 0,
-            "clock_gettime()");
-        float current_time_seconds =
-            current_time.tv_sec + current_time.tv_nsec / 1000000000.0;
-        float rotation = 2 * M_PI * (fmod(current_time_seconds, 6.0) / 6.0);
-
-        // camera.pos[2] = rotation;
+        if (uin_is_key_pressed(UIN_KEY_C) &&
+            uin_is_key_down(UIN_KEY_LEFT_SHIFT)) {
+            camera = initial_camera;
+        }
 
         GAPI_ERR(gapi_render_begin(&camera));
 
-        for (uint32_t x = 0; x < WIDTH; x++) {
-            for (uint32_t y = 0; y < WIDTH; y++) {
-                uint32_t i = y * WIDTH + x;
-                mat4 matrix;
-                glm_mat4_identity(matrix);
-                glm_translate(matrix, (vec3){x, 0, y});
-                glm_rotate(matrix, rotation * y * 0.2, up);
-
-                gapi_object_draw(
-                    barrels[i], pipeline, &matrix, GAPI_COLOR_WHITE);
-
-                glm_translate(matrix, (vec3){0, 2, 0});
-                glm_scale(matrix, (vec3){0.1, 0.1, 0.1});
-                gapi_object_draw(cubes[i], pipeline, &matrix, GAPI_COLOR_WHITE);
-            }
+        mat4 matrix;
+        glm_mat4_identity(matrix);
+        for (uint32_t i = 0; i < model_count; i++) {
+            gapi_object_draw(objects[i], pipeline, &matrix, GAPI_COLOR_WHITE);
         }
-
-        // gapi_rect_draw(rect,
-        //                (Rect2D){.width = window_width / 3,
-        //                         .height = window_height / 2,
-        //                         .x = 40,
-        //                         .y = 40},
-        //                GAPI_COLOR_WHITE,
-        //                pipeline);
 
         mat4 grid_matrix;
         glm_mat4_identity(grid_matrix);
-        glm_translate(grid_matrix, (vec3){-50, 1, -50});
+        glm_translate(grid_matrix,
+                      (vec3){-(int)(GRID_SIZE / 2), 0, -(int)(GRID_SIZE / 2)});
         gapi_object_draw(grid_object,
                          grid_pipeline,
                          &grid_matrix,

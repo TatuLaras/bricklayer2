@@ -219,12 +219,15 @@ static inline MldResult load_obj(size_t file_size,
         param_count = 0;
     }
 
-    *out_mesh = (MldMesh){
-        .vertex_count = vertex_buf->count - vertices_start,
-        .index_count = index_buf->count - indices_start,
-        .vertices = vertex_buf->data + vertices_start,
-        .indices = index_buf->data + indices_start,
-    };
+    *out_mesh =
+        (MldMesh){.mesh =
+                      {
+                          .vertex_count = vertex_buf->count - vertices_start,
+                          .index_count = index_buf->count - indices_start,
+                          .vertices = vertex_buf->data + vertices_start,
+                          .indices = index_buf->data + indices_start,
+                      },
+                  .storage = storage};
     return MLD_SUCCESS;
 }
 

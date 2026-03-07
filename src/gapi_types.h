@@ -105,18 +105,4 @@ typedef struct {
     void *uniform_buffer_mappings[GAPI_MAX_FRAMES_IN_FLIGHT];
 } GapiObject;
 
-typedef struct {
-    vec3s pos;
-    vec3s color;
-    vec3s normal;
-    vec2s uv;
-} Vertex;
-
-typedef struct {
-    uint32_t x;
-    uint32_t y;
-    uint32_t width;
-    uint32_t height;
-} Rect2D;
-
 #endif

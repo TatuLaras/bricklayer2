@@ -52,7 +52,7 @@ GapiResult grid_object_create(uint32_t size,
     for (uint32_t i = 0; i < vertex_count; i++)
         indices[i] = i;
 
-    MldMesh mesh = {
+    Mesh mesh = {
         .vertex_count = vertex_count,
         .index_count = vertex_count,
         .vertices = vertices,

@@ -1,8 +1,6 @@
 #include "gapi.h"
-
-#include "cglm/affine.h"
+#include "cglm/cglm.h"
 #include "gapi_low_level.h"
-
 #include "gapi_types.h"
 #include "utility_macros.h"
 #include <stdint.h>
@@ -251,8 +249,13 @@ GapiResult gapi_init(GapiInitInfo *info, GLFWwindow **out_window) {
 
     // Create a "null" texture
     uint32_t pixel = UINT32_MAX;
+    Image image = {
+        .width = 1,
+        .height = 1,
+        .pixels = &pixel,
+    };
     GapiTextureHandle handle;
-    gapi_texture_upload(&pixel, 1, 1, &handle);
+    gapi_texture_upload(&image, &handle);
 
     return GAPI_SUCCESS;
 }
@@ -353,7 +356,7 @@ GapiResult gapi_pipeline_create(GapiPipelineCreateInfo *create_info,
     return GAPI_SUCCESS;
 }
 
-GapiResult gapi_mesh_update(GapiMeshHandle mesh_handle, MldMesh *mesh) {
+GapiResult gapi_mesh_update(GapiMeshHandle mesh_handle, Mesh *mesh) {
 
     GapiMesh *gpu_mesh = GapiMeshBuf_get(&meshes, mesh_handle);
     if (mesh == NULL)
@@ -384,7 +387,7 @@ GapiResult gapi_mesh_update(GapiMeshHandle mesh_handle, MldMesh *mesh) {
     return GAPI_SUCCESS;
 }
 
-GapiResult gapi_mesh_upload(MldMesh *mesh, GapiMeshHandle *out_mesh_handle) {
+GapiResult gapi_mesh_upload(Mesh *mesh, GapiMeshHandle *out_mesh_handle) {
 
     GapiMesh new_mesh = {0};
     GapiMeshHandle handle = meshes.count;
@@ -396,10 +399,7 @@ GapiResult gapi_mesh_upload(MldMesh *mesh, GapiMeshHandle *out_mesh_handle) {
     return GAPI_SUCCESS;
 }
 
-GapiResult gapi_texture_update(GapiTextureHandle texture_handle,
-                               uint32_t *pixels,
-                               uint32_t width,
-                               uint32_t height) {
+GapiResult gapi_texture_update(GapiTextureHandle texture_handle, Image *image) {
 
     GapiTexture *texture = GapiTextureBuf_get(&textures, texture_handle);
     if (texture == NULL)
@@ -411,24 +411,22 @@ GapiResult gapi_texture_update(GapiTextureHandle texture_handle,
                                  command_pool,
                                  physical_device,
                                  queue,
-                                 pixels,
-                                 width,
-                                 height,
+                                 image->pixels,
+                                 image->width,
+                                 image->height,
                                  texture));
 
     return GAPI_SUCCESS;
 }
 
-GapiResult gapi_texture_upload(uint32_t *pixels,
-                               uint32_t width,
-                               uint32_t height,
+GapiResult gapi_texture_upload(Image *image,
                                GapiTextureHandle *out_texture_handle) {
 
     GapiTexture texture = {0};
     GapiTextureHandle handle = textures.count;
     SYS_ERR(GapiTextureBuf_append(&textures, &texture));
 
-    PROPAGATE(gapi_texture_update(handle, pixels, width, height));
+    PROPAGATE(gapi_texture_update(handle, image));
 
     *out_texture_handle = handle;
     return GAPI_SUCCESS;
@@ -779,10 +777,12 @@ void gapi_rect_draw(GapiObjectHandle object_handle,
 
 int gapi_window_should_close(double *out_delta_time) {
 
-    static double last_time = 0;
-    float current_time = glfwGetTime();
-    *out_delta_time = current_time - last_time;
-    last_time = current_time;
+    if (out_delta_time != NULL) {
+        static double last_time = 0;
+        float current_time = glfwGetTime();
+        *out_delta_time = current_time - last_time;
+        last_time = current_time;
+    }
 
     glfwPollEvents();
     return glfwWindowShouldClose(window);
@@ -794,7 +794,9 @@ void gapi_get_window_size(uint32_t *out_width, uint32_t *out_height) {
 }
 
 const char *gapi_strerror(GapiResult result) {
+
     switch (result) {
+
     case GAPI_SUCCESS:
         return "Success";
     case GAPI_ERROR_GENERIC:
@@ -802,7 +804,7 @@ const char *gapi_strerror(GapiResult result) {
     case GAPI_INVALID_HANDLE:
         return "Invalid handle";
     case GAPI_SYSTEM_ERROR:
-        return "A system error occurred, check errno";
+        return strerror(errno);
     case GAPI_VULKAN_ERROR:
         return "A vulkan error occurred, check gapi_get_vulkan_error()";
     case GAPI_GLFW_ERROR:
