@@ -16,7 +16,6 @@ struct VSOutput
 {
     float4 pos : SV_Position;
     float4 fragColor;
-    float2 fragTexCoord;
 };
 
 [shader("vertex")]
@@ -24,12 +23,10 @@ VSOutput vertMain(VSInput input) {
     VSOutput output;
     output.pos = mul(ubo.proj, mul(ubo.view, mul(ubo.model, float4(input.inPos, 1.0))));
     output.fragColor = ubo.color_tint;
-    output.fragTexCoord = input.inTexCoord;
     return output;
 }
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_TARGET {
-   return float4(vertIn.fragColor);
-    return ubo.color_tint;
+   return vertIn.fragColor;
 }
