@@ -47,6 +47,7 @@ static VkSemaphore rendering_done_semaphores[GAPI_MAX_FRAMES_IN_FLIGHT] = {0};
 static VkFence draw_fences[GAPI_MAX_FRAMES_IN_FLIGHT] = {0};
 
 static VkCommandBuffer drawing_command_buffers[GAPI_MAX_FRAMES_IN_FLIGHT] = {0};
+static VkCommandBuffer single_time_command_buffer = NULL;
 
 static VkImage depth_image = NULL;
 static VkDeviceMemory depth_image_memory;
@@ -168,6 +169,8 @@ GapiResult gapi_init(GapiInitInfo *info, GLFWwindow **out_window) {
                                          command_pool,
                                          GAPI_MAX_FRAMES_IN_FLIGHT,
                                          drawing_command_buffers));
+    PROPAGATE(gll_command_buffers_create(
+        device, command_pool, 1, &single_time_command_buffer));
     PROPAGATE(gll_depth_resources_create(device,
                                          physical_device,
                                          swap_extent,
@@ -226,7 +229,7 @@ GapiResult gapi_init(GapiInitInfo *info, GLFWwindow **out_window) {
 
     PROPAGATE(gll_upload_data(device,
                               physical_device,
-                              command_pool,
+                              single_time_command_buffer,
                               queue,
                               rect_vertices,
                               sizeof rect_vertices,
@@ -235,7 +238,7 @@ GapiResult gapi_init(GapiInitInfo *info, GLFWwindow **out_window) {
                               &rectangle_mesh.vertex_memory));
     PROPAGATE(gll_upload_data(device,
                               physical_device,
-                              command_pool,
+                              single_time_command_buffer,
                               queue,
                               rect_indices,
                               sizeof rect_indices,
@@ -287,11 +290,12 @@ void gapi_free(void) {
     }
     GapiMeshBuf_free(&meshes);
 
-    // Command stuff
+    // Command buffer stuff
     vkFreeCommandBuffers(device,
                          command_pool,
                          GAPI_MAX_FRAMES_IN_FLIGHT,
                          drawing_command_buffers);
+    vkFreeCommandBuffers(device, command_pool, 1, &single_time_command_buffer);
     vkDestroyCommandPool(device, command_pool, NULL);
 
     for (uint32_t i = 0; i < GAPI_MAX_FRAMES_IN_FLIGHT; i++) {
@@ -367,7 +371,7 @@ GapiResult gapi_mesh_update(GapiMeshHandle mesh_handle, Mesh *mesh) {
 
     PROPAGATE(gll_upload_data(device,
                               physical_device,
-                              command_pool,
+                              single_time_command_buffer,
                               queue,
                               mesh->vertices,
                               mesh->vertex_count * sizeof *mesh->vertices,
@@ -376,7 +380,7 @@ GapiResult gapi_mesh_update(GapiMeshHandle mesh_handle, Mesh *mesh) {
                               &gpu_mesh->vertex_memory));
     PROPAGATE(gll_upload_data(device,
                               physical_device,
-                              command_pool,
+                              single_time_command_buffer,
                               queue,
                               mesh->indices,
                               mesh->index_count * sizeof *mesh->indices,
@@ -408,7 +412,7 @@ GapiResult gapi_texture_update(GapiTextureHandle texture_handle, Image *image) {
     gll_texture_destroy(device, texture);
 
     PROPAGATE(gll_texture_create(device,
-                                 command_pool,
+                                 single_time_command_buffer,
                                  physical_device,
                                  queue,
                                  image->pixels,
@@ -526,8 +530,7 @@ GapiResult gapi_render_begin(GapiCamera *camera) {
     VK_ERR(vkBeginCommandBuffer(cmd_buf, &begin_info));
 
     gll_transition_image_layout(
-        device,
-        command_pool,
+        single_time_command_buffer,
         queue,
         depth_image,
         VK_IMAGE_LAYOUT_UNDEFINED,

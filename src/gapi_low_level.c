@@ -120,29 +120,18 @@ static inline GapiResult find_memory_type(VkPhysicalDevice physical_device,
     return GAPI_SUCCESS;
 }
 
-static inline GapiResult
-begin_single_time_commands(VkDevice device,
-                           VkCommandPool command_pool,
-                           VkCommandBuffer *command_buffer) {
-
-    VkCommandBufferAllocateInfo alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = command_pool,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
-    };
-    VK_ERR(vkAllocateCommandBuffers(device, &alloc_info, command_buffer));
+static inline GapiResult command_buffer_begin(VkCommandBuffer command_buffer) {
 
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    VK_ERR(vkBeginCommandBuffer(*command_buffer, &begin_info));
+    VK_ERR(vkBeginCommandBuffer(command_buffer, &begin_info));
 
     return GAPI_SUCCESS;
 }
 
-static inline GapiResult
-end_single_time_commands(VkCommandBuffer command_buffer, VkQueue queue) {
+static inline GapiResult command_buffer_end(VkCommandBuffer command_buffer,
+                                            VkQueue queue) {
 
     VK_ERR(vkEndCommandBuffer(command_buffer));
 
@@ -157,15 +146,13 @@ end_single_time_commands(VkCommandBuffer command_buffer, VkQueue queue) {
     return GAPI_SUCCESS;
 }
 
-static inline void buffer_copy(VkDevice device,
-                               VkCommandPool command_pool,
+static inline void buffer_copy(VkCommandBuffer command_buffer,
                                VkBuffer dst,
                                VkBuffer src,
                                VkDeviceSize size,
                                VkQueue queue) {
 
-    VkCommandBuffer command_buffer;
-    begin_single_time_commands(device, command_pool, &command_buffer);
+    command_buffer_begin(command_buffer);
 
     // Copy command
     VkBufferCopy regions = {
@@ -175,32 +162,30 @@ static inline void buffer_copy(VkDevice device,
     };
     vkCmdCopyBuffer(command_buffer, src, dst, 1, &regions);
 
-    end_single_time_commands(command_buffer, queue);
+    command_buffer_end(command_buffer, queue);
 }
 
-static inline void copy_buffer_to_image(VkDevice device,
-                                        VkCommandPool command_pool,
+static inline void copy_buffer_to_image(VkCommandBuffer command_buffer,
                                         VkQueue queue,
                                         VkBuffer buffer,
                                         VkImage image,
                                         uint32_t width,
                                         uint32_t height) {
 
-    VkCommandBuffer cmd_buf;
-    begin_single_time_commands(device, command_pool, &cmd_buf);
+    command_buffer_begin(command_buffer);
 
     VkBufferImageCopy region = {
         .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
         .imageExtent = {width, height, 1},
     };
-    vkCmdCopyBufferToImage(cmd_buf,
+    vkCmdCopyBufferToImage(command_buffer,
                            buffer,
                            image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                            1,
                            &region);
 
-    end_single_time_commands(cmd_buf, queue);
+    command_buffer_end(command_buffer, queue);
 }
 
 GapiResult gll_instance_create(VkInstance *out_instance) {
@@ -931,7 +916,7 @@ void gll_buffer_destroy(VkDevice device,
 
 GapiResult gll_upload_data(VkDevice device,
                            VkPhysicalDevice physical_device,
-                           VkCommandPool command_pool,
+                           VkCommandBuffer command_buffer,
                            VkQueue queue,
                            void *data,
                            uint32_t size,
@@ -966,7 +951,7 @@ GapiResult gll_upload_data(VkDevice device,
     vkUnmapMemory(device, staging_buffer_memory);
 
     // Copy from staging buffer to actual buffer
-    buffer_copy(device, command_pool, *out_buffer, staging_buffer, size, queue);
+    buffer_copy(command_buffer, *out_buffer, staging_buffer, size, queue);
 
     VK_ERR(vkQueueWaitIdle(queue));
     gll_buffer_destroy(device, staging_buffer, staging_buffer_memory);
@@ -1031,8 +1016,7 @@ void gll_transition_swapchain_image_layout(
     vkCmdPipelineBarrier2(command_buffer, &dependency_info);
 }
 
-void gll_transition_image_layout(VkDevice device,
-                                 VkCommandPool command_pool,
+void gll_transition_image_layout(VkCommandBuffer command_buffer,
                                  VkQueue queue,
                                  VkImage image,
                                  VkImageLayout old_layout,
@@ -1043,8 +1027,7 @@ void gll_transition_image_layout(VkDevice device,
                                  VkPipelineStageFlags dst_stage,
                                  VkImageAspectFlags image_aspect_flags) {
 
-    VkCommandBuffer cmd_buf;
-    begin_single_time_commands(device, command_pool, &cmd_buf);
+    command_buffer_begin(command_buffer);
 
     VkImageMemoryBarrier barrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -1057,9 +1040,9 @@ void gll_transition_image_layout(VkDevice device,
     };
 
     vkCmdPipelineBarrier(
-        cmd_buf, src_stage, dst_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
+        command_buffer, src_stage, dst_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
 
-    end_single_time_commands(cmd_buf, queue);
+    command_buffer_end(command_buffer, queue);
 }
 
 void gll_image_resources_destroy(VkDevice device,
@@ -1145,7 +1128,7 @@ gll_fences_create(VkDevice device, uint32_t count, VkFence *out_fences) {
 }
 
 GapiResult gll_texture_create(VkDevice device,
-                              VkCommandPool command_pool,
+                              VkCommandBuffer command_buffer,
                               VkPhysicalDevice physical_device,
                               VkQueue queue,
                               uint32_t *pixels,
@@ -1189,8 +1172,7 @@ GapiResult gll_texture_create(VkDevice device,
                                &texture.image,
                                &texture.image_memory));
 
-    gll_transition_image_layout(device,
-                                command_pool,
+    gll_transition_image_layout(command_buffer,
                                 queue,
                                 texture.image,
                                 VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1200,15 +1182,9 @@ GapiResult gll_texture_create(VkDevice device,
                                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                 VK_PIPELINE_STAGE_TRANSFER_BIT,
                                 VK_IMAGE_ASPECT_COLOR_BIT);
-    copy_buffer_to_image(device,
-                         command_pool,
-                         queue,
-                         staging_buffer,
-                         texture.image,
-                         width,
-                         height);
-    gll_transition_image_layout(device,
-                                command_pool,
+    copy_buffer_to_image(
+        command_buffer, queue, staging_buffer, texture.image, width, height);
+    gll_transition_image_layout(command_buffer,
                                 queue,
                                 texture.image,
                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,

@@ -29,6 +29,10 @@ const GapiCamera initial_camera = {
     .far_plane = 10000.0,
 };
 
+static struct {
+    int is_grid_disabled;
+} opts = {0};
+
 void texture_callback(const char *filepath, uint64_t cookie) {
 
     Image image;
@@ -135,9 +139,11 @@ int main(int argc, char **argv) {
     GapiCamera camera = initial_camera;
 
     double mouse_x, mouse_y;
+    double delta_time = 0;
 
-    while (!gapi_window_should_close(NULL)) {
+    while (!gapi_window_should_close(&delta_time)) {
 
+        INFO("%f", 1.0 / delta_time);
         firewatch_check();
 
         uin_get_mouse_delta(&mouse_x, &mouse_y);
@@ -159,10 +165,14 @@ int main(int argc, char **argv) {
             orbital_camera_update_zoom(&camera, scroll_amount);
         }
 
+        // Reset camera
         if (uin_is_key_pressed(UIN_KEY_C) &&
             uin_is_key_down(UIN_KEY_LEFT_SHIFT)) {
             camera = initial_camera;
         }
+
+        if (uin_is_key_pressed(UIN_KEY_G))
+            opts.is_grid_disabled = !opts.is_grid_disabled;
 
         GAPI_ERR(gapi_render_begin(&camera));
 
@@ -172,14 +182,17 @@ int main(int argc, char **argv) {
             gapi_object_draw(objects[i], pipeline, &matrix, GAPI_COLOR_WHITE);
         }
 
-        mat4 grid_matrix;
-        glm_mat4_identity(grid_matrix);
-        glm_translate(grid_matrix,
-                      (vec3){-(int)(GRID_SIZE / 2), 0, -(int)(GRID_SIZE / 2)});
-        gapi_object_draw(grid_object,
-                         grid_pipeline,
-                         &grid_matrix,
-                         (vec4){1.0, 1.0, 1.0, 0.1});
+        if (!opts.is_grid_disabled) {
+            mat4 grid_matrix;
+            glm_mat4_identity(grid_matrix);
+            glm_translate(
+                grid_matrix,
+                (vec3){-(int)(GRID_SIZE / 2), 0, -(int)(GRID_SIZE / 2)});
+            gapi_object_draw(grid_object,
+                             grid_pipeline,
+                             &grid_matrix,
+                             (vec4){1.0, 1.0, 1.0, 0.1});
+        }
 
         GAPI_ERR(gapi_render_end());
         uin_refresh();
