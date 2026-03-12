@@ -8,7 +8,6 @@
 #include "orbital_controls.h"
 #include "texture_loading.h"
 #include "user_input.h"
-#include "utility_macros.h"
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -19,10 +18,6 @@
 #define UBO_BINDING 0
 
 #define GRID_SIZE 20
-
-const char shader_code[] = {
-#embed "../build/shaders/shader.spv"
-};
 
 const GapiCamera initial_camera = {
     .pos = {0.01, 2, 3},
@@ -92,28 +87,6 @@ int main(int argc, char **argv) {
     };
     GAPI_ERR(gapi_init(&init_info, &window));
     uin_init(window);
-
-    GapiPipelineHandle pipeline;
-    GapiDescriptorLayoutItem layout_items[] = {
-        {
-            .binding = UBO_BINDING,
-            .type = GAPI_DESCRIPTOR_UNIFORM_BUFFER,
-            .stage = GAPI_STAGE_VERTEX,
-        },
-        {
-            .binding = TEXTURE_BINDING,
-            .type = GAPI_DESCRIPTOR_TEXTURE,
-            .stage = GAPI_STAGE_FRAGMENT,
-        },
-    };
-    GapiPipelineCreateInfo pipeline_create_info = {
-        .shader_code = shader_code,
-        .shader_code_size = sizeof shader_code,
-        .alpha_blending_mode = GAPI_ALPHA_BLENDING_BLEND,
-        .layout_item_count = COUNT(layout_items),
-        .layout_items = layout_items,
-    };
-    GAPI_ERR(gapi_pipeline_create(&pipeline_create_info, &pipeline));
 
     GapiPipelineHandle grid_pipeline;
     GapiObjectHandle grid_object;
@@ -193,7 +166,8 @@ int main(int argc, char **argv) {
         mat4 matrix;
         glm_mat4_identity(matrix);
         for (uint32_t i = 0; i < model_count; i++) {
-            gapi_object_draw(objects[i], pipeline, &matrix, GAPI_COLOR_WHITE);
+            gapi_object_draw(
+                objects[i], GAPI_PIPELINE_DEFAULT, &matrix, GAPI_COLOR_WHITE);
         }
 
         if (!opts.is_grid_disabled) {

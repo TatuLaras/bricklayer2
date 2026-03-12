@@ -1,0 +1,4 @@
+#!/bin/bash
+
+BASE="$(echo $1 | sed 's/....$//')"
+bricklayer "${BASE}.obj" "${BASE}.aseprite"

@@ -36,6 +36,8 @@ run: all
 install: all
 	cp $(BUILD_DIR)/$(NAME) $(INSTALL_DIR)/$(NAME)
 	chmod 755 $(INSTALL_DIR)/$(NAME)
+	cp bricklayer-ase $(INSTALL_DIR)/bricklayer_ase
+	chmod 755 $(INSTALL_DIR)/bricklayer_ase
 
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(wildcard $(SRC_DIR)/*.c)) $(patsubst $(EBB_COMMON_DIR)/%.c, $(BUILD_DIR)/%.o, $(wildcard $(EBB_COMMON_DIR)/*.c)) 
 
