@@ -1,6 +1,3 @@
-[submodule "external/cglm"]
-	path = external/cglm
-	url = https://github.com/recp/cglm.git
 [submodule "ebb_common"]
 	path = ebb_common
 	url = http://github.com/TatuLaras/ebb-common
