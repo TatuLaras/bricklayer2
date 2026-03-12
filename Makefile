@@ -1,4 +1,5 @@
 NAME = bricklayer
+INSTALL_DIR = /usr/local/bin
 CC = gcc
 BUILD_DIR = build
 EBB_COMMON_DIR = ebb_common
@@ -30,6 +31,11 @@ all: $(BUILD_DIR) $(SHADER_BUILD_DIR) $(SHADER_OBJS) $(BUILD_DIR)/$(NAME)
 run: all
 	@echo -e "\n\n\n\n---"
 	$(BUILD_DIR)/$(NAME) $(ARGS)
+
+.PHONY: install
+install: all
+	cp $(BUILD_DIR)/$(NAME) $(INSTALL_DIR)/$(NAME)
+	chmod 755 $(INSTALL_DIR)/$(NAME)
 
 OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(wildcard $(SRC_DIR)/*.c)) $(patsubst $(EBB_COMMON_DIR)/%.c, $(BUILD_DIR)/%.o, $(wildcard $(EBB_COMMON_DIR)/*.c)) 
 

@@ -9,9 +9,7 @@
 #include "texture_loading.h"
 #include "user_input.h"
 #include "utility_macros.h"
-#include <math.h>
 #include <stdlib.h>
-#include <time.h>
 #include <unistd.h>
 
 #define WINDOW_WIDTH 600
@@ -40,9 +38,6 @@ static struct {
     int is_debug_info_enabled;
 } opts = {0};
 
-static char buf[4096] = "Hello";
-static uint32_t buf_i = 5;
-
 void texture_callback(const char *filepath, uint64_t cookie) {
 
     Image image;
@@ -62,12 +57,6 @@ void mesh_callback(const char *filepath, uint64_t cookie) {
     GAPI_ERR(gapi_mesh_update((GapiMeshHandle)cookie, &mesh.mesh));
     free(mesh.mesh.vertices);
     free(mesh.mesh.indices);
-}
-
-void character_callback(GLFWwindow *window, unsigned int codepoint) {
-    if (buf_i >= sizeof buf)
-        buf_i = 0;
-    buf[buf_i++] = codepoint;
 }
 
 void usage_exit(char *program_name) {
@@ -103,7 +92,6 @@ int main(int argc, char **argv) {
     };
     GAPI_ERR(gapi_init(&init_info, &window));
     uin_init(window);
-    glfwSetCharCallback(window, character_callback);
 
     GapiPipelineHandle pipeline;
     GapiDescriptorLayoutItem layout_items[] = {

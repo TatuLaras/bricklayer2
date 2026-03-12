@@ -1,3 +1,3 @@
 CompileFlags:
-  Add: [-xc, -Wall, -I/usr/include/freetype2, -I/usr/include/libpng16, -I../external/gapi, -I../external/cglm/include, -I., -I../external, -DDEBUG, -Wextra, -Wshadow, -Wno-empty-translation-unit, -pedantic, -DLSP_EDITOR]
+  Add: [-xc, -Wall, -I/usr/include/freetype2, -I/usr/include/libpng16, -I../ebb_common, -I../ebb_common/cglm/include, -I., -I../external, -DDEBUG, -Wextra, -Wshadow, -Wno-empty-translation-unit, -pedantic, -DLSP_EDITOR]
 
