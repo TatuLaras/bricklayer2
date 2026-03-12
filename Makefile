@@ -1,13 +1,12 @@
 NAME = bricklayer
 CC = gcc
 BUILD_DIR = build
-EXTERNAL_DIR = external
-CGLM = $(EXTERNAL_DIR)/cglm/include
+EBB_COMMON_DIR = ebb_common
 SHADER_BUILD_DIR = build/shaders
 SRC_DIR = src
 SHADER_SRC_DIR = $(SRC_DIR)/shaders
-PKG = $(shell pkg-config --libs vulkan glfw3) -lm
-INCLUDE = -I$(EXTERNAL_DIR) -I$(CGLM) -I$(SRC_DIR)
+PKG = $(shell pkg-config --libs vulkan glfw3 freetype2) -lm
+INCLUDE = -I$(EBB_COMMON_DIR) -I$(EBB_COMMON_DIR)/cglm/include -I$(SRC_DIR) $(shell pkg-config --cflags-only-I freetype2)
 ARGS =
 DEBUG_FLAGS = -DNDEBUG
 
@@ -32,13 +31,15 @@ run: all
 	@echo -e "\n\n\n\n---"
 	$(BUILD_DIR)/$(NAME) $(ARGS)
 
-OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(wildcard $(SRC_DIR)/*.c)) 
+OBJS = $(patsubst $(SRC_DIR)/%.c, $(BUILD_DIR)/%.o, $(wildcard $(SRC_DIR)/*.c)) $(patsubst $(EBB_COMMON_DIR)/%.c, $(BUILD_DIR)/%.o, $(wildcard $(EBB_COMMON_DIR)/*.c)) 
 
 # output executable
 $(BUILD_DIR)/$(NAME): $(OBJS)
 	gcc $^ -o $@ $(PKG) $(ASAN)
 
 $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
+	$(CC) -c $^ -o $@ $(INCLUDE) $(CFLAGS) $(CC_ARGS)
+$(BUILD_DIR)/%.o: $(EBB_COMMON_DIR)/%.c
 	$(CC) -c $^ -o $@ $(INCLUDE) $(CFLAGS) $(CC_ARGS)
 
 $(SHADER_BUILD_DIR)/%.spv: $(SHADER_SRC_DIR)/%.slang
