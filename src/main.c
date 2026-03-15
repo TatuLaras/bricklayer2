@@ -160,7 +160,7 @@ int main(int argc, char **argv) {
             opts.is_debug_info_enabled = !opts.is_debug_info_enabled;
 
         GAPI_ERR(gapi_render_begin(&camera));
-        Color clear = (Color){0x21, 0x0d, 0x1f, 0xff};
+        vec4 clear = {0.0, 0.0, 0.0, 1.0};
         gapi_clear(&clear);
 
         mat4 matrix;
